@@ -6,6 +6,7 @@ import { ConversationService } from '../conversation/conversation.service';
 import { WhatsappApiService } from '../whatsapp/whatsapp-api.service';
 import { DocumentIntakeService } from '../document-intake/document-intake.service';
 import { DocumentChatService } from '../document-chat/document-chat.service';
+import { OnboardingService } from '../onboarding/onboarding.service';
 import { INCOMING_MESSAGE_QUEUE } from '../queue/queue.constants';
 import { IncomingMessageJobData } from './incoming-message.types';
 
@@ -20,12 +21,13 @@ export class IncomingMessageProcessor extends WorkerHost {
     private readonly whatsappApiService: WhatsappApiService,
     private readonly documentIntakeService: DocumentIntakeService,
     private readonly documentChatService: DocumentChatService,
+    private readonly onboardingService: OnboardingService,
   ) {
     super();
   }
 
   async process(job: Job<IncomingMessageJobData>): Promise<void> {
-    const { from, type, messageId } = job.data;
+    const { from, type, messageId, text } = job.data;
     this.logger.log(
       `Processing message ${messageId} from=${from} type=${type}`,
     );
@@ -33,9 +35,58 @@ export class IncomingMessageProcessor extends WorkerHost {
     const { user, conversation } =
       await this.conversationService.getOrCreateForPhoneNumber(from);
     const isMedia = MEDIA_TYPES.has(type);
+    const command = this.onboardingService.parseCommand(text?.body);
+
+    if (command === 'help') {
+      await this.whatsappApiService.sendTextMessage(
+        from,
+        this.onboardingService.getHelpMessage(),
+      );
+      return;
+    }
+
+    // Not honored mid-PROCESSING: a job is already in flight, and changing
+    // state out from under it could leave AnalyzeDocumentProcessor unable to
+    // transition once it completes. The PROCESSING branch below replies
+    // explaining why instead.
+    if (
+      command === 'restart' &&
+      conversation.state !== ConversationState.PROCESSING
+    ) {
+      if (conversation.state !== ConversationState.IDLE) {
+        await this.conversationService.transitionState(
+          conversation.id,
+          ConversationState.IDLE,
+          { activeDocumentId: null },
+        );
+      }
+      await this.whatsappApiService.sendTextMessage(
+        from,
+        this.onboardingService.getRestartConfirmation(),
+      );
+      return;
+    }
 
     switch (conversation.state) {
       case ConversationState.IDLE:
+        if (isMedia) {
+          await this.documentIntakeService.handleIncomingDocument(
+            user,
+            conversation,
+            job.data,
+          );
+        } else {
+          await this.whatsappApiService.sendTextMessage(
+            from,
+            this.onboardingService.getWelcomeMessage(),
+          );
+          await this.conversationService.transitionState(
+            conversation.id,
+            ConversationState.AWAITING_DOCUMENT,
+          );
+        }
+        break;
+
       case ConversationState.AWAITING_DOCUMENT:
         if (isMedia) {
           await this.documentIntakeService.handleIncomingDocument(
@@ -44,10 +95,9 @@ export class IncomingMessageProcessor extends WorkerHost {
             job.data,
           );
         } else {
-          // TODO(Task 8): send the onboarding/help copy explaining how to use the bot.
           await this.whatsappApiService.sendTextMessage(
             from,
-            'Got it, processing...',
+            this.onboardingService.getAwaitingDocumentReminder(),
           );
         }
         break;

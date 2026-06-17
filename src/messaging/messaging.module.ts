@@ -4,6 +4,7 @@ import { ConversationModule } from '../conversation/conversation.module';
 import { WhatsappModule } from '../whatsapp/whatsapp.module';
 import { DocumentIntakeModule } from '../document-intake/document-intake.module';
 import { DocumentChatModule } from '../document-chat/document-chat.module';
+import { OnboardingModule } from '../onboarding/onboarding.module';
 import { IncomingMessageProcessor } from './incoming-message.processor';
 
 @Module({
@@ -13,6 +14,7 @@ import { IncomingMessageProcessor } from './incoming-message.processor';
     WhatsappModule,
     DocumentIntakeModule,
     DocumentChatModule,
+    OnboardingModule,
   ],
   providers: [IncomingMessageProcessor],
 })

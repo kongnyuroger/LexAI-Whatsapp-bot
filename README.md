@@ -87,7 +87,7 @@ one `Conversation` per phone number (Prisma models in `prisma/schema.prisma`):
   `CHATTING`) and `activeDocumentId`.
 
 Allowed state transitions (enforced by `transitionState()`; `IDLE` is reachable from every state
-so a user can always type "new"/"restart" — Task 8):
+so a user can always type "new"/"restart" to reset — see "Onboarding, help & restart" below):
 
 | From | Can move to |
 | --- | --- |
@@ -110,12 +110,14 @@ BullMQ queue (`src/queue/queue.module.ts`) backed by Redis:
   the failed set (capped at the most recent 1000) — this repo's dead-letter handling, since BullMQ
   has no separate DLQ concept. Failures are logged with the job id, message id, and sender so they
   stay debuggable.
-- The processor routes by `(conversation.state, message.type)`. IDLE/AWAITING_DOCUMENT + media
-  runs document intake (below); ANALYZED/CHATTING + text runs document chat (below);
+- Before routing by state, every text message is checked for a "help" or "restart" command (see
+  "Onboarding, help & restart" below) — these work from (almost) any state, not just one branch
+  of the switch.
+- The processor then routes by `(conversation.state, message.type)`. IDLE/AWAITING_DOCUMENT +
+  media runs document intake (below); ANALYZED/CHATTING + text runs document chat (below);
   ANALYZED/CHATTING + media starts a new analysis (sending a new file is treated as "analyze this
   instead", not a confirmation prompt — both states already allow transitioning to `PROCESSING`).
-  The remaining branches (IDLE/AWAITING_DOCUMENT + text, PROCESSING + anything) still send a
-  placeholder/status reply, with onboarding/help copy as a `TODO(Task 8)`.
+  IDLE/AWAITING_DOCUMENT + text sends onboarding copy; PROCESSING + anything sends a status reply.
 
 ## Document intake flow
 
@@ -193,6 +195,36 @@ Once a conversation is `ANALYZED` or `CHATTING`, a text message is forwarded to
 5. `404`/`422` → transition back to `IDLE` with a friendly message (the document this conversation
    was pointing at is no longer usable); anything else is rethrown so BullMQ retries per the
    incoming-message queue's attempts/backoff config.
+
+## Onboarding, help & restart
+
+`OnboardingService` (`src/onboarding/onboarding.service.ts`) is a pure text/parsing helper — no
+I/O of its own, same split as `AnalysisFormatterService` — covering three things:
+
+- **Onboarding** — the first (or any) plain-text message while `IDLE` gets a welcome message
+  explaining what to send, and the conversation moves to `AWAITING_DOCUMENT`. A further plain-text
+  message there gets a shorter reminder instead of repeating the full welcome, since the user has
+  already seen it. (There's no separate "is this a brand-new user" check — the same welcome copy
+  works fine for a returning user back at `IDLE`, so no extra field was added just to suppress it.)
+- **Help** — typing `help`, `menu`, or `?` (exact match, case-insensitive, not a substring match —
+  so "can you help me understand clause 4?" isn't misread as a command) replies with a static list
+  of capabilities and supported formats, from **any** conversation state, without changing it.
+- **Restart** — typing `restart`, `new`, `reset`, `cancel`, or `start over` resets the conversation
+  to `IDLE` (clearing `activeDocumentId`) and confirms, from any state **except** `PROCESSING`.
+  It's deliberately not honored mid-`PROCESSING`: a `document-analysis` job is already in flight
+  for that conversation, and resetting the state out from under it would make
+  `AnalyzeDocumentProcessor`'s own `-> ANALYZED` transition fail once the job completes (`IDLE` to
+  `ANALYZED` isn't an allowed transition). The `PROCESSING` branch's existing "still working" reply
+  is sent instead, explaining why nothing changed.
+
+Both commands are checked once, before the `(state, message.type)` switch in
+`IncomingMessageProcessor`, rather than being duplicated into every branch.
+
+**Note on "error messaging":** user-facing error copy for document intake, analysis, and chat
+failures was already built in Tasks 5-7 (friendly WhatsApp replies, not raw error text). What's
+not yet in this repo is a global HTTP exception filter for the webhook controller itself (the
+backend has one — `AllExceptionsFilter`); that's deferred to Task 9 alongside the rest of
+security/observability hardening rather than bundled in here.
 
 ## Environment variables
 
@@ -284,6 +316,6 @@ implemented so far.
 - [x] Task 5 — Document intake flow
 - [x] Task 6 — Sending analysis results as WhatsApp messages
 - [x] Task 7 — Document chat via WhatsApp
-- [ ] Task 8 — Onboarding, help & error messaging
+- [x] Task 8 — Onboarding, help & error messaging
 - [ ] Task 9 — Observability, rate limiting & security hardening
 - [ ] Task 10 — Testing & CI
