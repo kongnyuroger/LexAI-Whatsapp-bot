@@ -23,7 +23,9 @@ detection, or document analysis.
   with axios
 - **Database:** PostgreSQL — tracks only WhatsApp session/conversation state, not documents or
   analysis (that lives in `lexai-backend`)
-- **ORM:** Prisma
+- **ORM:** Prisma 6.x (deliberately not 7.x: the new major introduced a `prisma.config.ts`
+  rewrite, mandatory driver adapters, and an ESM-by-default client that needs extra workarounds
+  under NestJS's CJS build — not worth the risk for this MVP)
 - **Queue:** BullMQ + Redis, so webhook handlers can acknowledge Meta within a few seconds while
   real work happens in the background
 - **Validation:** class-validator / class-transformer
@@ -36,10 +38,15 @@ detection, or document analysis.
 npm install
 cp .env.example .env   # fill in real values, see table below
 docker-compose up -d   # starts Postgres + Redis
+npm run prisma:migrate # applies the Prisma schema to Postgres
 npm run start:dev
 ```
 
 Health check: `GET http://localhost:3000/health` → `{ "status": "ok", "timestamp": "..." }`
+
+Note: `PrismaModule` connects to Postgres on app startup, so a reachable `DATABASE_URL` is required
+even to run the e2e test suite (`npm run test:e2e`) — `docker-compose up -d` + `npm run
+prisma:migrate` (or `prisma:deploy` against an already-migrated database) first.
 
 ## WhatsApp webhook
 
@@ -68,6 +75,30 @@ bot needs:
   template message, for first contact or to re-engage outside the 24-hour window. Templates must
   already exist and be approved in the Meta Business Manager.
 
+## Conversation state
+
+`ConversationService` (`src/conversation/conversation.service.ts`) tracks one `WhatsappUser` and
+one `Conversation` per phone number (Prisma models in `prisma/schema.prisma`):
+
+- **WhatsappUser** — `phoneNumber` (unique), and the linked `lexai-backend` identity once
+  `ensureLinkedBackendUser()` succeeds (`lexaiUserId`, `lexaiAccessToken`).
+- **Conversation** — `state` (`IDLE` / `AWAITING_DOCUMENT` / `PROCESSING` / `ANALYZED` /
+  `CHATTING`) and `activeDocumentId`.
+
+Allowed state transitions (enforced by `transitionState()`; `IDLE` is reachable from every state
+so a user can always type "new"/"restart" — Task 8):
+
+| From | Can move to |
+| --- | --- |
+| `IDLE` | `AWAITING_DOCUMENT`, `PROCESSING` |
+| `AWAITING_DOCUMENT` | `PROCESSING`, `IDLE` |
+| `PROCESSING` | `ANALYZED`, `IDLE` (on failure) |
+| `ANALYZED` | `CHATTING`, `PROCESSING` (new document), `IDLE` |
+| `CHATTING` | `CHATTING`, `PROCESSING` (new document), `IDLE` |
+
+`ensureLinkedBackendUser(user)` is the single seam that calls the (currently unbuilt)
+`lexai-backend` `POST /auth/whatsapp-link` endpoint — see "Known Integration Gap" below.
+
 ## Environment variables
 
 | Variable | Description |
@@ -76,6 +107,7 @@ bot needs:
 | `DATABASE_URL` | Postgres connection string (Prisma) |
 | `REDIS_URL` | Redis connection string (BullMQ) |
 | `LEXAI_BACKEND_URL` | Base URL of `lexai-backend` |
+| `LEXAI_WHATSAPP_LINK_SECRET` | Shared secret for the proposed `POST /auth/whatsapp-link` endpoint (not yet implemented in `lexai-backend`) |
 | `WHATSAPP_VERIFY_TOKEN` | Shared secret used to verify the Meta webhook subscription challenge |
 | `WHATSAPP_ACCESS_TOKEN` | Permanent access token for a System User on the Meta App |
 | `WHATSAPP_PHONE_NUMBER_ID` | Phone Number ID from the Meta App's WhatsApp API Setup page |
@@ -133,7 +165,7 @@ implemented so far.
 
 - [x] Task 1 — Project initialization, tooling, backend auth gap analysis
 - [x] Task 2 — WhatsApp Cloud API client
-- [ ] Task 3 — Conversation state & user linking
+- [x] Task 3 — Conversation state & user linking
 - [ ] Task 4 — Background job queue for webhook processing
 - [ ] Task 5 — Document intake flow
 - [ ] Task 6 — Sending analysis results as WhatsApp messages

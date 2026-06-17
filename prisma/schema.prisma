@@ -1,0 +1,38 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model WhatsappUser {
+  id               String   @id @default(uuid())
+  phoneNumber      String   @unique
+  lexaiUserId      String?
+  lexaiAccessToken String?
+  createdAt        DateTime @default(now())
+
+  conversation Conversation?
+}
+
+enum ConversationState {
+  IDLE
+  AWAITING_DOCUMENT
+  PROCESSING
+  ANALYZED
+  CHATTING
+}
+
+model Conversation {
+  id               String             @id @default(uuid())
+  whatsappUserId   String             @unique
+  whatsappUser     WhatsappUser       @relation(fields: [whatsappUserId], references: [id])
+  activeDocumentId String?
+  state            ConversationState  @default(IDLE)
+  updatedAt        DateTime           @updatedAt
+}
