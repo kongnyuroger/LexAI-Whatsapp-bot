@@ -51,6 +51,13 @@ both `DATABASE_URL` and `REDIS_URL` must be reachable even to run the e2e test s
 test:e2e`) — `docker-compose up -d` + `npm run prisma:migrate` (or `prisma:deploy` against an
 already-migrated database) first.
 
+Note: `docker-compose.yml` publishes Postgres on host port **5434** (not 5432) and Redis on
+**6380** (not 6379) — many dev machines already run native Postgres/Redis system services on the
+defaults (this one does), and Docker doesn't always fail loudly when a port is already taken by
+something bound only to `127.0.0.1` (Postgres silently never published the port at all, while
+Redis failed outright — same root cause, two different symptoms). `.env.example` matches these
+non-default ports already.
+
 ## WhatsApp webhook
 
 This bot exposes `GET/POST /webhook` for the Meta WhatsApp Cloud API (Graph API `v25.0`, confirmed

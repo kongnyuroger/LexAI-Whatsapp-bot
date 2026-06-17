@@ -7,11 +7,16 @@ services:
       POSTGRES_PASSWORD: lexai
       POSTGRES_DB: lexai_whatsapp_bot
     ports:
-      - "5432:5432"
+      # Host port 5434, not 5432: many dev machines already run a native
+      # Postgres on 5432 (systemd's postgresql.service), which would silently
+      # win that port and make this container unreachable at localhost:5432
+      # without Docker reporting an error. The container's own internal port
+      # stays 5432; only the host-side mapping changes.
+      - "5434:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U lexai"]
+      test: ["CMD-SHELL", "pg_isready -U lexai -d lexai_whatsapp_bot"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -20,7 +25,10 @@ services:
     image: redis:7-alpine
     restart: unless-stopped
     ports:
-      - "6379:6379"
+      # Host port 6380, not 6379: same reasoning as Postgres above — many dev
+      # machines (including this one) already run a native redis-server on
+      # 6379. The container's own internal port stays 6379.
+      - "6380:6379"
     volumes:
       - redis_data:/data
     healthcheck:
