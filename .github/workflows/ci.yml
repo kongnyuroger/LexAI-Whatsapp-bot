@@ -1,0 +1,82 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    # Real Postgres + Redis service containers, not just mocked-out unit
+    # tests: this repo's e2e suite genuinely connects to both on app startup
+    # (PrismaModule, QueueModule), so CI needs them reachable to run it.
+    # (GitHub-hosted runners are clean VMs, so the default ports here are
+    # safe — unlike a dev machine that might already run native services on
+    # them; see docker-compose.yml's comments for that local-only concern.)
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: lexai
+          POSTGRES_PASSWORD: lexai
+          POSTGRES_DB: lexai_whatsapp_bot
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U lexai -d lexai_whatsapp_bot"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql://lexai:lexai@localhost:5432/lexai_whatsapp_bot?schema=public
+      REDIS_URL: redis://localhost:6379
+      LEXAI_BACKEND_URL: http://localhost:3999
+      LEXAI_SERVICE_API_KEY: ci-test-service-key
+      WHATSAPP_VERIFY_TOKEN: ci-test-verify-token
+      WHATSAPP_ACCESS_TOKEN: ci-test-access-token
+      WHATSAPP_PHONE_NUMBER_ID: '000000000000000'
+      WHATSAPP_BUSINESS_ACCOUNT_ID: '000000000000000'
+      WHATSAPP_APP_SECRET: ci-test-app-secret
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Generate Prisma client
+        run: npm run prisma:generate
+
+      - name: Apply Prisma migrations
+        run: npm run prisma:deploy
+
+      - name: Build
+        run: npm run build
+
+      - name: Run unit tests with coverage
+        run: npm run test:cov
+
+      - name: Run e2e tests
+        run: npm run test:e2e

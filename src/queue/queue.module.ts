@@ -9,7 +9,7 @@ import {
 // Parsed into a plain options object (rather than handing BullMQ an ioredis
 // instance we construct ourselves) to avoid a duplicate-ioredis-version type
 // clash with the copy bundled inside bullmq's own dependency tree.
-function parseRedisUrl(url: string) {
+export function parseRedisUrl(url: string) {
   const parsed = new URL(url);
   return {
     host: parsed.hostname,

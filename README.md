@@ -344,6 +344,28 @@ that's corrected now to match:
   this bot) is synchronous too: `{ message }` in, `{ message: { role: 'assistant', content,
   ... } }` out, or `404`/`422`. No usage-limit guard applies to chat, unlike analyze.
 
+## Testing & CI
+
+```bash
+npm run test        # unit tests (all dependencies mocked — no real DB/Redis needed)
+npm run test:cov    # unit tests with a coverage report
+npm run test:e2e    # e2e tests — needs DATABASE_URL and REDIS_URL actually reachable
+                     # (docker-compose up -d + npm run prisma:migrate first)
+```
+
+`.github/workflows/ci.yml` runs on every push/PR to `main`: install, lint, `prisma generate`,
+`prisma migrate deploy`, build, unit tests with coverage, then e2e tests.
+
+Unlike `lexai-backend`'s own CI (which only runs its unit suite — its tests mock `PrismaService`
+throughout, so no database is actually needed), this workflow also spins up real Postgres and
+Redis **service containers** and runs the e2e suite against them. That's a deliberate difference,
+not an oversight: this bot's `PrismaModule` and `QueueModule` connect to Postgres/Redis on app
+*startup* (not just per-request), so unit tests alone can't catch a broken migration or a queue
+misconfiguration — only e2e (a real `Test.createTestingModule` + `app.init()`) exercises that
+path. GitHub-hosted runners are clean VMs, so the workflow uses the default `5432`/`6379` ports
+directly — the `5434`/`6380` port shift in `docker-compose.yml` is purely a local-dev workaround
+for machines that already run native Postgres/Redis, and doesn't apply in CI.
+
 ## Project status
 
 This is an MVP built incrementally, one numbered task per commit. See commit history for what's
@@ -358,4 +380,10 @@ implemented so far.
 - [x] Task 7 — Document chat via WhatsApp
 - [x] Task 8 — Onboarding, help & error messaging
 - [x] Task 9 — Observability, rate limiting & security hardening
-- [ ] Task 10 — Testing & CI
+- [x] Task 10 — Testing & CI
+
+All 10 planned tasks are complete. Known follow-ups, called out explicitly rather than silently
+left out, are listed inline above where they came up: structured/correlation-id logging and
+job-failure metrics ("Security & observability hardening"), and the account-merging policy and
+`SERVICE_API_KEY` rotation tooling, both of which are `lexai-backend`'s own documented MVP
+simplifications rather than this repo's gaps ("Backend Integration").
