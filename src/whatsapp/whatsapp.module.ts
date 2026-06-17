@@ -2,12 +2,13 @@ import { Module } from '@nestjs/common';
 import { HttpModule } from '@nestjs/axios';
 import { WhatsappController } from './whatsapp.controller';
 import { WhatsappApiService } from './whatsapp-api.service';
+import { WebhookSignatureGuard } from './guards/webhook-signature.guard';
 import { QueueModule } from '../queue/queue.module';
 
 @Module({
   imports: [HttpModule, QueueModule],
   controllers: [WhatsappController],
-  providers: [WhatsappApiService],
+  providers: [WhatsappApiService, WebhookSignatureGuard],
   exports: [WhatsappApiService],
 })
 export class WhatsappModule {}

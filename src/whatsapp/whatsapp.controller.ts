@@ -7,16 +7,20 @@ import {
   Logger,
   Post,
   Query,
+  UseGuards,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectQueue } from '@nestjs/bullmq';
+import { Throttle } from '@nestjs/throttler';
 import { Queue } from 'bullmq';
 import { WebhookPayloadDto } from './dto/webhook-payload.dto';
+import { WebhookSignatureGuard } from './guards/webhook-signature.guard';
 import {
   INCOMING_MESSAGE_JOB,
   INCOMING_MESSAGE_QUEUE,
 } from '../queue/queue.constants';
 import { IncomingMessageJobData } from '../messaging/incoming-message.types';
+import { timingSafeEqualStrings } from '../common/timing-safe-equal.util';
 
 @Controller('webhook')
 export class WhatsappController {
@@ -41,7 +45,11 @@ export class WhatsappController {
       'WHATSAPP_VERIFY_TOKEN',
     );
 
-    if (mode === 'subscribe' && token === expectedToken) {
+    if (
+      mode === 'subscribe' &&
+      expectedToken &&
+      timingSafeEqualStrings(token ?? '', expectedToken)
+    ) {
       return challenge;
     }
 
@@ -52,6 +60,13 @@ export class WhatsappController {
   // requires a fast 200 response or it will retry and eventually disable the
   // webhook, so the actual work (download media, call lexai-backend, reply)
   // happens in IncomingMessageProcessor, off the request path.
+  //
+  // WebhookSignatureGuard proves Meta sent this (X-Hub-Signature-256), since
+  // there is no other authentication on this endpoint. The higher throttle
+  // limit reflects Meta's webhook deliveries coming from a shared pool of
+  // egress IPs serving many WhatsApp users — see app.module.ts.
+  @UseGuards(WebhookSignatureGuard)
+  @Throttle({ default: { limit: 1000, ttl: 60000 } })
   @Post()
   @HttpCode(200)
   async receiveWebhook(

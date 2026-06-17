@@ -44,6 +44,29 @@ describe('WhatsappController', () => {
         controller.verifyWebhook('subscribe', 'wrong-token', 'challenge-123'),
       ).toThrow(ForbiddenException);
     });
+
+    it('throws ForbiddenException when WHATSAPP_VERIFY_TOKEN is not configured', async () => {
+      const moduleWithoutToken: TestingModule = await Test.createTestingModule({
+        controllers: [WhatsappController],
+        providers: [
+          { provide: ConfigService, useValue: { get: () => undefined } },
+          {
+            provide: getQueueToken(INCOMING_MESSAGE_QUEUE),
+            useValue: queue,
+          },
+        ],
+      }).compile();
+      const controllerWithoutToken =
+        moduleWithoutToken.get<WhatsappController>(WhatsappController);
+
+      expect(() =>
+        controllerWithoutToken.verifyWebhook(
+          'subscribe',
+          'anything',
+          'challenge-123',
+        ),
+      ).toThrow(ForbiddenException);
+    });
   });
 
   describe('receiveWebhook', () => {

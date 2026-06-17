@@ -29,6 +29,8 @@ detection, or document analysis.
 - **Queue:** BullMQ + Redis, so webhook handlers can acknowledge Meta within a few seconds while
   real work happens in the background
 - **Validation:** class-validator / class-transformer
+- **Security:** Helmet (security headers), `@nestjs/throttler` (rate limiting), webhook payload
+  signature verification — see "Security & observability hardening" below
 - **Testing:** Jest (unit) + Supertest (e2e)
 - **Containerization:** Docker + docker-compose for Postgres + Redis
 
@@ -56,13 +58,14 @@ current as of June 2026):
 
 - `GET /webhook` — handles Meta's one-time webhook verification handshake. Meta sends
   `hub.mode`, `hub.verify_token`, and `hub.challenge` as query params; this endpoint echoes back
-  `hub.challenge` with `200 OK` if `hub.verify_token` matches `WHATSAPP_VERIFY_TOKEN`, otherwise
-  responds `403`.
-- `POST /webhook` — receives real-time message notifications. The payload shape is validated
-  against the documented Cloud API webhook structure (`object` / `entry[].changes[].value`), then
-  each message is enqueued as an `IncomingMessageJob` (BullMQ) and the handler returns `200`
-  immediately — Meta requires a fast acknowledgement or it will retry and eventually disable the
-  webhook.
+  `hub.challenge` with `200 OK` if `hub.verify_token` matches `WHATSAPP_VERIFY_TOKEN` (compared in
+  constant time), otherwise responds `403`.
+- `POST /webhook` — receives real-time message notifications, guarded by `WebhookSignatureGuard`
+  (see "Security & observability hardening" below — this is the real authentication on this
+  endpoint, not the GET handshake's verify token). The payload shape is validated against the
+  documented Cloud API webhook structure (`object` / `entry[].changes[].value`), then each message
+  is enqueued as an `IncomingMessageJob` (BullMQ) and the handler returns `200` immediately — Meta
+  requires a fast acknowledgement or it will retry and eventually disable the webhook.
 
 `WhatsappApiService` (`src/whatsapp/whatsapp-api.service.ts`) wraps the three Graph API calls this
 bot needs:
@@ -221,10 +224,39 @@ Both commands are checked once, before the `(state, message.type)` switch in
 `IncomingMessageProcessor`, rather than being duplicated into every branch.
 
 **Note on "error messaging":** user-facing error copy for document intake, analysis, and chat
-failures was already built in Tasks 5-7 (friendly WhatsApp replies, not raw error text). What's
-not yet in this repo is a global HTTP exception filter for the webhook controller itself (the
-backend has one — `AllExceptionsFilter`); that's deferred to Task 9 alongside the rest of
-security/observability hardening rather than bundled in here.
+failures was already built in Tasks 5-7 (friendly WhatsApp replies, not raw error text). A global
+HTTP exception filter for the webhook controller itself (mirroring the backend's own
+`AllExceptionsFilter`) was added in Task 9, alongside the rest of security/observability
+hardening — see below.
+
+## Security & observability hardening
+
+- **Webhook signature verification** (`src/whatsapp/guards/webhook-signature.guard.ts`) — Meta
+  signs every webhook POST with `X-Hub-Signature-256: sha256=<hex HMAC-SHA256 of the raw body,
+  keyed with the Meta App Secret>` (confirmed against Meta's webhook docs, June 2026). Without
+  this, anyone who discovered the webhook URL could POST fabricated messages with arbitrary
+  `from` numbers — there was no other authentication on `POST /webhook` before this; the
+  `hub.verify_token` check only ever applied to the one-time `GET` handshake. Requires
+  `WHATSAPP_APP_SECRET` and `rawBody: true` on the Nest app (`main.ts`) — verifying against the
+  parsed-and-re-serialized JSON body wouldn't reliably reproduce the exact bytes Meta signed.
+- **Constant-time comparisons** — both the webhook signature check and the `GET /webhook`
+  `hub.verify_token` check use `timingSafeEqualStrings()` (`src/common/timing-safe-equal.util.ts`),
+  mirroring the pattern lexai-backend's own `ServiceAuthGuard` uses for its `X-Service-Key` check.
+- **Helmet** — standard security headers (`app.use(helmet())` in `main.ts`).
+- **Rate limiting** (`@nestjs/throttler`) — a global default of 100 requests/60s per IP
+  (`app.module.ts`), with `POST /webhook` overridden much higher (1000/60s) via `@Throttle()`.
+  Meta's webhook deliveries come from a shared pool of egress IPs serving many WhatsApp users at
+  once, so a tight per-IP limit there would risk throttling legitimate traffic — the real defense
+  for that endpoint is the signature check above, not IP-based throttling.
+- **Global exception filter** (`src/common/all-exceptions.filter.ts`) — mirrors lexai-backend's
+  own `AllExceptionsFilter`: a consistent `{ statusCode, message, timestamp, path }` JSON body for
+  every error instead of a raw stack trace, with unexpected (non-`HttpException`) errors logged
+  server-side in full but reported to the client only as a generic "Internal server error".
+
+Not done here (left for a future iteration, not silently skipped): structured/correlation-id
+logging across the webhook → queue → processor chain, and metrics/alerting on job failure rates.
+The existing per-job logging (job id, message id, sender, attempt count) was judged sufficient for
+this MVP's scale.
 
 ## Environment variables
 
@@ -239,6 +271,7 @@ security/observability hardening rather than bundled in here.
 | `WHATSAPP_ACCESS_TOKEN` | Permanent access token for a System User on the Meta App |
 | `WHATSAPP_PHONE_NUMBER_ID` | Phone Number ID from the Meta App's WhatsApp API Setup page |
 | `WHATSAPP_BUSINESS_ACCOUNT_ID` | WhatsApp Business Account (WABA) ID |
+| `WHATSAPP_APP_SECRET` | Meta App Secret (Settings > Basic), used to verify the `X-Hub-Signature-256` header on every webhook POST |
 
 ## Backend Integration: Service-to-Service Auth
 
@@ -317,5 +350,5 @@ implemented so far.
 - [x] Task 6 — Sending analysis results as WhatsApp messages
 - [x] Task 7 — Document chat via WhatsApp
 - [x] Task 8 — Onboarding, help & error messaging
-- [ ] Task 9 — Observability, rate limiting & security hardening
+- [x] Task 9 — Observability, rate limiting & security hardening
 - [ ] Task 10 — Testing & CI
