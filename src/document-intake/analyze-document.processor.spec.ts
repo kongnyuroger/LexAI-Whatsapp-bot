@@ -36,6 +36,7 @@ describe('AnalyzeDocumentProcessor', () => {
   let conversationService: {
     findUserById: jest.Mock;
     transitionState: jest.Mock;
+    ensureLinkedBackendUser: jest.Mock;
   };
   let whatsappApiService: { sendTextMessage: jest.Mock };
   let lexaiBackendService: { analyzeDocument: jest.Mock };
@@ -51,6 +52,7 @@ describe('AnalyzeDocumentProcessor', () => {
     conversationService = {
       findUserById: jest.fn().mockResolvedValue(user),
       transitionState: jest.fn(),
+      ensureLinkedBackendUser: jest.fn().mockResolvedValue(user),
     };
     whatsappApiService = { sendTextMessage: jest.fn() };
     lexaiBackendService = { analyzeDocument: jest.fn() };
@@ -93,6 +95,9 @@ describe('AnalyzeDocumentProcessor', () => {
       }),
     );
 
+    expect(conversationService.ensureLinkedBackendUser).toHaveBeenCalledWith(
+      user,
+    );
     expect(lexaiBackendService.analyzeDocument).toHaveBeenCalledWith(
       'token-abc',
       'doc-1',
@@ -176,10 +181,30 @@ describe('AnalyzeDocumentProcessor', () => {
     expect(conversationService.transitionState).not.toHaveBeenCalled();
   });
 
-  it('does nothing when the user has no lexai-backend token', async () => {
-    conversationService.findUserById.mockResolvedValueOnce({
+  it('does nothing when the WhatsApp user record itself is not found', async () => {
+    conversationService.findUserById.mockResolvedValueOnce(null);
+
+    await processor.process(
+      makeJob({
+        documentId: 'doc-1',
+        conversationId: 'c1',
+        whatsappUserId: 'u1',
+      }),
+    );
+
+    expect(conversationService.ensureLinkedBackendUser).not.toHaveBeenCalled();
+    expect(lexaiBackendService.analyzeDocument).not.toHaveBeenCalled();
+  });
+
+  it('re-links via ensureLinkedBackendUser using a freshly refreshed token, not a stale cached one', async () => {
+    conversationService.ensureLinkedBackendUser.mockResolvedValueOnce({
       ...user,
-      lexaiAccessToken: null,
+      lexaiAccessToken: 'refreshed-token',
+    });
+    lexaiBackendService.analyzeDocument.mockResolvedValueOnce({
+      documentId: 'doc-1',
+      summary: { purpose: 'Lease' },
+      riskFlags: [],
     });
 
     await processor.process(
@@ -190,7 +215,29 @@ describe('AnalyzeDocumentProcessor', () => {
       }),
     );
 
+    expect(lexaiBackendService.analyzeDocument).toHaveBeenCalledWith(
+      'refreshed-token',
+      'doc-1',
+    );
+  });
+
+  it('rethrows for retry when ensureLinkedBackendUser itself fails (e.g. backend unreachable)', async () => {
+    conversationService.ensureLinkedBackendUser.mockRejectedValueOnce(
+      new Error('connect ECONNREFUSED'),
+    );
+
+    await expect(
+      processor.process(
+        makeJob({
+          documentId: 'doc-1',
+          conversationId: 'c1',
+          whatsappUserId: 'u1',
+        }),
+      ),
+    ).rejects.toThrow('connect ECONNREFUSED');
+
     expect(lexaiBackendService.analyzeDocument).not.toHaveBeenCalled();
+    expect(conversationService.transitionState).not.toHaveBeenCalled();
   });
 
   describe('onFailed', () => {

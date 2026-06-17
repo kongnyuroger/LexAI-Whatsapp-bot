@@ -35,17 +35,22 @@ export class AnalyzeDocumentProcessor extends WorkerHost {
     const { documentId, conversationId, whatsappUserId } = job.data;
 
     const user = await this.conversationService.findUserById(whatsappUserId);
-    if (!user?.lexaiAccessToken) {
+    if (!user) {
       this.logger.error(
-        `Cannot analyze document ${documentId}: user ${whatsappUserId} has no lexai-backend token`,
+        `Cannot analyze document ${documentId}: WhatsApp user ${whatsappUserId} not found`,
       );
       return;
     }
 
     let analysis: AnalysisResult;
     try {
+      // Re-checked here (not just at upload time) since the cached access
+      // token may have expired in the time this job spent queued —
+      // ensureLinkedBackendUser transparently refreshes or re-links as needed.
+      const linkedUser =
+        await this.conversationService.ensureLinkedBackendUser(user);
       analysis = await this.lexaiBackendService.analyzeDocument(
-        user.lexaiAccessToken,
+        linkedUser.lexaiAccessToken as string,
         documentId,
       );
     } catch (error) {

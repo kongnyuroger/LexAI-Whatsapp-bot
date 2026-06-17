@@ -209,13 +209,31 @@ Response: { "accessToken": "<JWT, 15min>", "refreshToken": "<JWT, 7d>", "user": 
   explicit `phoneNumber` for who they're acting on behalf of.
 - Idempotent: repeated calls for the same `phoneNumber` find-or-create the same `User` row and
   issue a fresh token pair — never a duplicate user.
-- **Access tokens expire after 15 minutes.** Rather than tracking expiry and implementing
-  refresh-token rotation, `ensureLinkedBackendUser()` calls this endpoint fresh every time a
-  backend-authenticated call is about to be made, instead of caching the token on `WhatsappUser`.
-  Simpler and more robust for an MVP, given linking itself is documented as cheap and idempotent.
 - WhatsApp-linked users and email/password-registered users are deliberately **not** merged: they
   are separate `User` rows keyed by `phoneNumber` vs `email` respectively. lexai-backend's own
   README documents this as a known simplification, not an oversight.
+
+### Token caching and refresh
+
+`lexai-backend`'s own README spells out the exact flow it expects this bot to follow (its
+"Service-to-Service / WhatsApp Integration" -> "Full flow" section): link once, cache both
+tokens, reuse the access token while valid, and use `POST /auth/refresh` — not a fresh link —
+once it expires. An earlier version of `ensureLinkedBackendUser()` in this repo didn't do this
+(it called `whatsapp-link` fresh on every request and discarded the refresh token entirely);
+that's corrected now to match:
+
+- `WhatsappUser` caches `lexaiAccessToken`, `lexaiRefreshToken`, and `lexaiAccessTokenExpiresAt`.
+- If the cached access token is still valid (with a 30s safety margin), it's reused with **no**
+  HTTP call at all.
+- If it's expired but a refresh token is cached, `POST /auth/refresh` (`{ refreshToken }` ->
+  `{ accessToken }`, confirmed against `lexai-backend/src/auth/auth.service.ts` — the refresh
+  token itself is reused as-is, not rotated) gets a new access token without re-linking.
+- Falls back to `POST /auth/whatsapp-link` only if there's no refresh token yet, or the refresh
+  token itself is rejected (its own 7-day lifetime expired) — re-linking is documented as
+  idempotent, so this is always a safe recovery path.
+- `AnalyzeDocumentProcessor` calls `ensureLinkedBackendUser()` too (not just the upload path in
+  `DocumentIntakeService`), since the access token cached at upload time can expire while the
+  analyze job sits queued.
 
 ### Other contract details confirmed the same way (by reading lexai-backend directly)
 

@@ -219,21 +219,33 @@ describe('ConversationService', () => {
   });
 
   describe('ensureLinkedBackendUser', () => {
-    it('always calls whatsapp-link, even if a token is already cached (15min expiry)', async () => {
+    it('reuses the cached access token without any HTTP call while still valid', async () => {
       const user = {
         id: 'u1',
         phoneNumber: '+237600000000',
         lexaiUserId: 'backend-1',
-        lexaiAccessToken: 'stale-token',
+        lexaiAccessToken: 'still-valid-token',
+        lexaiRefreshToken: 'refresh-token',
+        lexaiAccessTokenExpiresAt: new Date(Date.now() + 10 * 60 * 1000),
+      };
+
+      const result = await service.ensureLinkedBackendUser(user as never);
+
+      expect(httpService.post).not.toHaveBeenCalled();
+      expect(result).toBe(user);
+    });
+
+    it('calls POST /auth/refresh (not whatsapp-link) when the cached token has expired', async () => {
+      const user = {
+        id: 'u1',
+        phoneNumber: '+237600000000',
+        lexaiUserId: 'backend-1',
+        lexaiAccessToken: 'expired-token',
+        lexaiRefreshToken: 'refresh-token',
+        lexaiAccessTokenExpiresAt: new Date(Date.now() - 1000),
       };
       httpService.post.mockReturnValueOnce(
-        of(
-          axiosResponse({
-            accessToken: 'fresh-token',
-            refreshToken: 'refresh-token',
-            user: { id: 'backend-1' },
-          }),
-        ),
+        of(axiosResponse({ accessToken: 'fresh-token' })),
       );
       const updated = { ...user, lexaiAccessToken: 'fresh-token' };
       prisma.whatsappUser.update.mockResolvedValueOnce(updated);
@@ -241,25 +253,35 @@ describe('ConversationService', () => {
       const result = await service.ensureLinkedBackendUser(user as never);
 
       expect(httpService.post).toHaveBeenCalledWith(
-        'http://backend.test/auth/whatsapp-link',
-        { phoneNumber: '+237600000000' },
-        { headers: { 'X-Service-Key': 'shared-secret' } },
+        'http://backend.test/auth/refresh',
+        { refreshToken: 'refresh-token' },
       );
+      const calls = prisma.whatsappUser.update.mock
+        .calls as unknown as unknown[][];
+      const updateCall = calls[0][0] as {
+        where: { id: string };
+        data: { lexaiAccessToken: string; lexaiAccessTokenExpiresAt: Date };
+      };
+      expect(updateCall.where).toEqual({ id: 'u1' });
+      expect(updateCall.data.lexaiAccessToken).toBe('fresh-token');
+      expect(updateCall.data.lexaiAccessTokenExpiresAt).toBeInstanceOf(Date);
       expect(result).toBe(updated);
     });
 
-    it('calls the whatsapp-link endpoint and persists the returned token', async () => {
+    it('calls whatsapp-link and persists access + refresh tokens for a never-linked user', async () => {
       const user = {
         id: 'u1',
         phoneNumber: '+237600000000',
         lexaiUserId: null,
         lexaiAccessToken: null,
+        lexaiRefreshToken: null,
+        lexaiAccessTokenExpiresAt: null,
       };
       httpService.post.mockReturnValueOnce(
         of(
           axiosResponse({
             accessToken: 'new-token',
-            refreshToken: 'refresh-token',
+            refreshToken: 'new-refresh-token',
             user: { id: 'backend-1' },
           }),
         ),
@@ -268,6 +290,7 @@ describe('ConversationService', () => {
         ...user,
         lexaiUserId: 'backend-1',
         lexaiAccessToken: 'new-token',
+        lexaiRefreshToken: 'new-refresh-token',
       };
       prisma.whatsappUser.update.mockResolvedValueOnce(updated);
 
@@ -278,19 +301,79 @@ describe('ConversationService', () => {
         { phoneNumber: '+237600000000' },
         { headers: { 'X-Service-Key': 'shared-secret' } },
       );
-      expect(prisma.whatsappUser.update).toHaveBeenCalledWith({
-        where: { id: 'u1' },
-        data: { lexaiUserId: 'backend-1', lexaiAccessToken: 'new-token' },
-      });
+      const calls = prisma.whatsappUser.update.mock
+        .calls as unknown as unknown[][];
+      const updateCall = calls[0][0] as {
+        where: { id: string };
+        data: {
+          lexaiUserId: string;
+          lexaiAccessToken: string;
+          lexaiRefreshToken: string;
+          lexaiAccessTokenExpiresAt: Date;
+        };
+      };
+      expect(updateCall.where).toEqual({ id: 'u1' });
+      expect(updateCall.data.lexaiUserId).toBe('backend-1');
+      expect(updateCall.data.lexaiAccessToken).toBe('new-token');
+      expect(updateCall.data.lexaiRefreshToken).toBe('new-refresh-token');
+      expect(updateCall.data.lexaiAccessTokenExpiresAt).toBeInstanceOf(Date);
       expect(result).toBe(updated);
     });
 
-    it('propagates the error when the service API key is rejected', async () => {
+    it('falls back to whatsapp-link when the cached refresh token itself is rejected', async () => {
+      const user = {
+        id: 'u1',
+        phoneNumber: '+237600000000',
+        lexaiUserId: 'backend-1',
+        lexaiAccessToken: 'expired-token',
+        lexaiRefreshToken: 'expired-refresh-token',
+        lexaiAccessTokenExpiresAt: new Date(Date.now() - 1000),
+      };
+      const refreshError = new AxiosError('Unauthorized');
+      refreshError.response = axiosResponse({
+        message: 'Invalid or expired refresh token',
+      });
+      httpService.post.mockReturnValueOnce(throwError(() => refreshError));
+      httpService.post.mockReturnValueOnce(
+        of(
+          axiosResponse({
+            accessToken: 're-linked-token',
+            refreshToken: 're-linked-refresh-token',
+            user: { id: 'backend-1' },
+          }),
+        ),
+      );
+      const updated = {
+        ...user,
+        lexaiAccessToken: 're-linked-token',
+        lexaiRefreshToken: 're-linked-refresh-token',
+      };
+      prisma.whatsappUser.update.mockResolvedValueOnce(updated);
+
+      const result = await service.ensureLinkedBackendUser(user as never);
+
+      expect(httpService.post).toHaveBeenNthCalledWith(
+        1,
+        'http://backend.test/auth/refresh',
+        { refreshToken: 'expired-refresh-token' },
+      );
+      expect(httpService.post).toHaveBeenNthCalledWith(
+        2,
+        'http://backend.test/auth/whatsapp-link',
+        { phoneNumber: '+237600000000' },
+        { headers: { 'X-Service-Key': 'shared-secret' } },
+      );
+      expect(result).toBe(updated);
+    });
+
+    it('propagates the error when whatsapp-link itself is rejected (no cached refresh token)', async () => {
       const user = {
         id: 'u1',
         phoneNumber: '+237600000000',
         lexaiUserId: null,
         lexaiAccessToken: null,
+        lexaiRefreshToken: null,
+        lexaiAccessTokenExpiresAt: null,
       };
       const error = new AxiosError('Unauthorized');
       error.response = axiosResponse({

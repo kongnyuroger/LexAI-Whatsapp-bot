@@ -11,11 +11,13 @@ datasource db {
 }
 
 model WhatsappUser {
-  id               String   @id @default(uuid())
-  phoneNumber      String   @unique
-  lexaiUserId      String?
-  lexaiAccessToken String?
-  createdAt        DateTime @default(now())
+  id                        String    @id @default(uuid())
+  phoneNumber               String    @unique
+  lexaiUserId               String?
+  lexaiAccessToken          String?
+  lexaiRefreshToken         String?
+  lexaiAccessTokenExpiresAt DateTime?
+  createdAt                 DateTime  @default(now())
 
   conversation Conversation?
 }

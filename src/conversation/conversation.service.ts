@@ -31,6 +31,17 @@ interface WhatsappLinkResponse {
   user: { id: string };
 }
 
+interface RefreshResponse {
+  accessToken: string;
+}
+
+// lexai-backend issues access tokens with a 15-minute expiry (documented in
+// its own README's "Service-to-Service / WhatsApp Integration" section and
+// hardcoded as `expiresIn: '15m'` in its AuthService). Refresh a little
+// early so a token never expires mid-request.
+const ACCESS_TOKEN_TTL_MS = 15 * 60 * 1000;
+const TOKEN_EXPIRY_SAFETY_MARGIN_MS = 30 * 1000;
+
 export class InvalidStateTransitionError extends Error {
   constructor(from: ConversationState, to: ConversationState) {
     super(`Invalid conversation state transition: ${from} -> ${to}`);
@@ -105,14 +116,61 @@ export class ConversationService {
   /**
    * Single seam for obtaining a usable lexai-backend access token for a WhatsApp-linked user.
    *
-   * Calls lexai-backend's POST /auth/whatsapp-link (verified against the running lexai-backend
-   * instance — see README "Backend Integration: Service-to-Service Auth"), authenticated via the
-   * X-Service-Key header. That endpoint's access tokens expire after 15 minutes, and re-linking
-   * is documented as idempotent and cheap (finds-or-creates, never duplicates), so this always
-   * calls it fresh rather than caching a token that could be stale by the time it's used —
-   * simpler and more robust than implementing refresh-token rotation for an MVP.
+   * Mirrors the flow lexai-backend's own README documents for this bot ("Service-to-Service /
+   * WhatsApp Integration" -> "Full flow"): link once via POST /auth/whatsapp-link, cache the
+   * access + refresh token pair, reuse the cached access token while it's still valid, and use
+   * POST /auth/refresh (not a fresh link) once it expires. Falls back to re-linking only if no
+   * refresh token is cached yet or the refresh token itself has expired (its 7-day lifetime, vs
+   * the access token's 15 minutes) — re-linking is documented as idempotent, so this is always a
+   * safe recovery path.
    */
   async ensureLinkedBackendUser(user: WhatsappUser): Promise<WhatsappUser> {
+    if (this.hasValidAccessToken(user)) {
+      return user;
+    }
+
+    if (user.lexaiRefreshToken) {
+      try {
+        return await this.refreshAccessToken(user);
+      } catch (error) {
+        this.logger.warn(
+          `Refresh token rejected for WhatsApp user ${user.id}, falling back to re-linking: ${(error as Error).message}`,
+        );
+      }
+    }
+
+    return this.linkBackendUser(user);
+  }
+
+  private hasValidAccessToken(user: WhatsappUser): boolean {
+    if (!user.lexaiAccessToken || !user.lexaiAccessTokenExpiresAt) {
+      return false;
+    }
+    return (
+      user.lexaiAccessTokenExpiresAt.getTime() >
+      Date.now() + TOKEN_EXPIRY_SAFETY_MARGIN_MS
+    );
+  }
+
+  private async refreshAccessToken(user: WhatsappUser): Promise<WhatsappUser> {
+    const backendUrl = this.configService.get<string>('LEXAI_BACKEND_URL');
+
+    const response = await firstValueFrom(
+      this.httpService.post<RefreshResponse>(`${backendUrl}/auth/refresh`, {
+        refreshToken: user.lexaiRefreshToken,
+      }),
+    );
+
+    return this.prisma.whatsappUser.update({
+      where: { id: user.id },
+      data: {
+        lexaiAccessToken: response.data.accessToken,
+        lexaiAccessTokenExpiresAt: this.computeAccessTokenExpiry(),
+      },
+    });
+  }
+
+  private async linkBackendUser(user: WhatsappUser): Promise<WhatsappUser> {
     const backendUrl = this.configService.get<string>('LEXAI_BACKEND_URL');
     const serviceApiKey = this.configService.get<string>(
       'LEXAI_SERVICE_API_KEY',
@@ -132,6 +190,8 @@ export class ConversationService {
         data: {
           lexaiUserId: response.data.user.id,
           lexaiAccessToken: response.data.accessToken,
+          lexaiRefreshToken: response.data.refreshToken,
+          lexaiAccessTokenExpiresAt: this.computeAccessTokenExpiry(),
         },
       });
     } catch (error) {
@@ -141,5 +201,9 @@ export class ConversationService {
       );
       throw error;
     }
+  }
+
+  private computeAccessTokenExpiry(): Date {
+    return new Date(Date.now() + ACCESS_TOKEN_TTL_MS);
   }
 }
