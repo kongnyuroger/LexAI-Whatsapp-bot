@@ -1,22 +1,19 @@
 import { OnWorkerEvent, Processor, WorkerHost } from '@nestjs/bullmq';
 import { Logger } from '@nestjs/common';
-import { InjectQueue } from '@nestjs/bullmq';
-import { Job, Queue } from 'bullmq';
+import { Job } from 'bullmq';
+import { AxiosError } from 'axios';
 import { ConversationState } from '@prisma/client';
 import { ConversationService } from '../conversation/conversation.service';
 import { WhatsappApiService } from '../whatsapp/whatsapp-api.service';
 import { LexaiBackendService } from '../lexai-backend/lexai-backend.service';
 import { AnalyzeDocumentJobData } from './analyze-document.types';
-import {
-  MAX_POLL_ATTEMPTS,
-  POLL_INTERVAL_MS,
-} from './document-intake.constants';
-import {
-  DOCUMENT_ANALYSIS_QUEUE,
-  POLL_ANALYSIS_JOB,
-  TRIGGER_ANALYSIS_JOB,
-} from '../queue/queue.constants';
+import { DOCUMENT_ANALYSIS_QUEUE } from '../queue/queue.constants';
 
+// POST /documents/:id/analyze on lexai-backend is synchronous — it returns
+// the full analysis or a definitive error (403/404/422) in one call, so
+// there is no "still processing" status to poll for here. This job exists
+// only to keep that (potentially slow, LLM-backed) call off the fast
+// incoming-message queue.
 @Processor(DOCUMENT_ANALYSIS_QUEUE)
 export class AnalyzeDocumentProcessor extends WorkerHost {
   private readonly logger = new Logger(AnalyzeDocumentProcessor.name);
@@ -25,8 +22,6 @@ export class AnalyzeDocumentProcessor extends WorkerHost {
     private readonly conversationService: ConversationService,
     private readonly whatsappApiService: WhatsappApiService,
     private readonly lexaiBackendService: LexaiBackendService,
-    @InjectQueue(DOCUMENT_ANALYSIS_QUEUE)
-    private readonly analysisQueue: Queue<AnalyzeDocumentJobData>,
   ) {
     super();
   }
@@ -42,77 +37,91 @@ export class AnalyzeDocumentProcessor extends WorkerHost {
       return;
     }
 
-    if (job.name === TRIGGER_ANALYSIS_JOB) {
+    try {
       await this.lexaiBackendService.analyzeDocument(
         user.lexaiAccessToken,
         documentId,
       );
-      await this.analysisQueue.add(
-        POLL_ANALYSIS_JOB,
-        { ...job.data, pollAttempt: 0 },
-        { delay: POLL_INTERVAL_MS },
-      );
-      return;
+    } catch (error) {
+      const status = (error as AxiosError).response?.status;
+
+      if (status === 403) {
+        await this.givenUp(
+          conversationId,
+          user.phoneNumber,
+          "You've reached your monthly document analysis limit on the free plan. Please try again next month.",
+        );
+        return;
+      }
+      if (status === 404 || status === 422) {
+        await this.givenUp(
+          conversationId,
+          user.phoneNumber,
+          "Sorry, I couldn't analyze that document. Please try sending it again.",
+        );
+        return;
+      }
+      // Anything else (network blip, 5xx) is rethrown so BullMQ retries per
+      // the queue's attempts/backoff config; see onFailed for the case
+      // where every retry is exhausted.
+      throw error;
     }
 
-    // job.name === POLL_ANALYSIS_JOB
-    const document = await this.lexaiBackendService.getDocument(
-      user.lexaiAccessToken,
-      documentId,
+    // TODO(Task 6): fetch the formatted summary + risk flags and send those
+    // instead of this placeholder reply.
+    await this.conversationService.transitionState(
+      conversationId,
+      ConversationState.ANALYZED,
     );
-
-    if (document.status === 'ANALYZED') {
-      await this.conversationService.transitionState(
-        conversationId,
-        ConversationState.ANALYZED,
-      );
-      // TODO(Task 6): fetch GET /documents/:id/analysis and send the
-      // formatted summary + risk flags instead of this placeholder.
-      await this.whatsappApiService.sendTextMessage(
-        user.phoneNumber,
-        'Your document is ready! Ask me anything about it.',
-      );
-      return;
-    }
-
-    if (document.status === 'FAILED') {
-      await this.conversationService.transitionState(
-        conversationId,
-        ConversationState.IDLE,
-      );
-      await this.whatsappApiService.sendTextMessage(
-        user.phoneNumber,
-        "Sorry, I couldn't analyze that document. Please try sending it again.",
-      );
-      return;
-    }
-
-    const nextAttempt = (job.data.pollAttempt ?? 0) + 1;
-    if (nextAttempt >= MAX_POLL_ATTEMPTS) {
-      await this.conversationService.transitionState(
-        conversationId,
-        ConversationState.IDLE,
-      );
-      await this.whatsappApiService.sendTextMessage(
-        user.phoneNumber,
-        'This is taking longer than expected. Please try sending your document again in a few minutes.',
-      );
-      return;
-    }
-
-    await this.analysisQueue.add(
-      POLL_ANALYSIS_JOB,
-      { ...job.data, pollAttempt: nextAttempt },
-      { delay: POLL_INTERVAL_MS },
+    await this.whatsappApiService.sendTextMessage(
+      user.phoneNumber,
+      'Your document is ready! Ask me anything about it.',
     );
   }
 
+  private async givenUp(
+    conversationId: string,
+    phoneNumber: string,
+    message: string,
+  ): Promise<void> {
+    await this.conversationService.transitionState(
+      conversationId,
+      ConversationState.IDLE,
+    );
+    await this.whatsappApiService.sendTextMessage(phoneNumber, message);
+  }
+
   @OnWorkerEvent('failed')
-  onFailed(job: Job<AnalyzeDocumentJobData> | undefined, error: Error) {
+  async onFailed(
+    job: Job<AnalyzeDocumentJobData> | undefined,
+    error: Error,
+  ): Promise<void> {
     this.logger.error(
-      `Job ${job?.id} (${job?.name}, document ${job?.data?.documentId}) ` +
-        `failed after ${job?.attemptsMade ?? 0} attempt(s): ${error.message}`,
+      `Job ${job?.id} (document ${job?.data?.documentId}) failed after ` +
+        `${job?.attemptsMade ?? 0} attempt(s): ${error.message}`,
       error.stack,
+    );
+
+    if (!job) {
+      return;
+    }
+
+    const maxAttempts = job.opts?.attempts ?? 1;
+    if (job.attemptsMade < maxAttempts) {
+      return; // more retries scheduled — the user hasn't been told anything yet
+    }
+
+    const user = await this.conversationService.findUserById(
+      job.data.whatsappUserId,
+    );
+    if (!user) {
+      return;
+    }
+
+    await this.givenUp(
+      job.data.conversationId,
+      user.phoneNumber,
+      'Sorry, something went wrong while analyzing your document. Please try sending it again.',
     );
   }
 }

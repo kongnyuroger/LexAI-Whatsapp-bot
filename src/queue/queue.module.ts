@@ -49,9 +49,10 @@ function parseRedisUrl(url: string) {
       {
         name: DOCUMENT_ANALYSIS_QUEUE,
         defaultJobOptions: {
-          // Retries here cover transient failures talking to lexai-backend
-          // (e.g. a dropped connection) — the "still processing, check back
-          // later" case is modeled as a new delayed job, not a retry.
+          // POST /documents/:id/analyze is synchronous on lexai-backend's
+          // side (it returns the full result or a definitive error in one
+          // call) — these retries only cover transient failures actually
+          // talking to it (e.g. a dropped connection), not "still working".
           attempts: 3,
           backoff: { type: 'fixed', delay: 3000 },
           removeOnComplete: { age: 24 * 60 * 60 },

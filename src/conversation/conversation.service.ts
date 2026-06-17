@@ -26,8 +26,9 @@ const ALLOWED_TRANSITIONS: Record<ConversationState, ConversationState[]> = {
 };
 
 interface WhatsappLinkResponse {
-  userId: string;
   accessToken: string;
+  refreshToken: string;
+  user: { id: string };
 }
 
 export class InvalidStateTransitionError extends Error {
@@ -104,41 +105,39 @@ export class ConversationService {
   /**
    * Single seam for obtaining a usable lexai-backend access token for a WhatsApp-linked user.
    *
-   * lexai-backend has no phone-number-based auth today (see README "Known Integration Gap").
-   * This calls the proposed POST /auth/whatsapp-link endpoint and persists the returned token.
-   * Until that endpoint exists in lexai-backend, this will fail — callers should treat the
-   * rejection as "backend linking not available yet", not crash the whole message handler.
+   * Calls lexai-backend's POST /auth/whatsapp-link (verified against the running lexai-backend
+   * instance — see README "Backend Integration: Service-to-Service Auth"), authenticated via the
+   * X-Service-Key header. That endpoint's access tokens expire after 15 minutes, and re-linking
+   * is documented as idempotent and cheap (finds-or-creates, never duplicates), so this always
+   * calls it fresh rather than caching a token that could be stale by the time it's used —
+   * simpler and more robust than implementing refresh-token rotation for an MVP.
    */
   async ensureLinkedBackendUser(user: WhatsappUser): Promise<WhatsappUser> {
-    if (user.lexaiAccessToken) {
-      return user;
-    }
-
     const backendUrl = this.configService.get<string>('LEXAI_BACKEND_URL');
-    const linkSecret = this.configService.get<string>(
-      'LEXAI_WHATSAPP_LINK_SECRET',
+    const serviceApiKey = this.configService.get<string>(
+      'LEXAI_SERVICE_API_KEY',
     );
 
     try {
       const response = await firstValueFrom(
         this.httpService.post<WhatsappLinkResponse>(
           `${backendUrl}/auth/whatsapp-link`,
-          { phoneNumber: user.phoneNumber, secret: linkSecret },
+          { phoneNumber: user.phoneNumber },
+          { headers: { 'X-Service-Key': serviceApiKey } },
         ),
       );
 
       return this.prisma.whatsappUser.update({
         where: { id: user.id },
         data: {
-          lexaiUserId: response.data.userId,
+          lexaiUserId: response.data.user.id,
           lexaiAccessToken: response.data.accessToken,
         },
       });
     } catch (error) {
       const axiosError = error as AxiosError;
       this.logger.error(
-        `Failed to link WhatsApp user ${user.id} to lexai-backend ` +
-          `(is POST /auth/whatsapp-link implemented yet?): ${axiosError.message}`,
+        `Failed to link WhatsApp user ${user.id} to lexai-backend: ${axiosError.message}`,
       );
       throw error;
     }

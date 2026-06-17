@@ -15,14 +15,16 @@ import {
   MAX_FILE_SIZE_BYTES,
 } from './document-intake.constants';
 import {
+  ANALYZE_DOCUMENT_JOB,
   DOCUMENT_ANALYSIS_QUEUE,
-  TRIGGER_ANALYSIS_JOB,
 } from '../queue/queue.constants';
 
 const EXTENSION_BY_MIME_TYPE: Record<string, string> = {
   'application/pdf': 'pdf',
   'image/jpeg': 'jpg',
   'image/png': 'png',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document':
+    'docx',
 };
 
 @Injectable()
@@ -50,7 +52,7 @@ export class DocumentIntakeService {
     if (!ALLOWED_MIME_TYPES.includes(media.mime_type)) {
       await this.whatsappApiService.sendTextMessage(
         user.phoneNumber,
-        'Sorry, I can only read PDF documents or JPEG/PNG photos of contracts right now. Please resend in one of those formats.',
+        'Sorry, I can only read PDF, Word (.docx), or JPEG/PNG photos of contracts right now. Please resend in one of those formats.',
       );
       return;
     }
@@ -98,6 +100,18 @@ export class DocumentIntakeService {
         metadata.mimeType,
       );
 
+      // lexai-backend extracts text synchronously as part of the upload
+      // response itself (still HTTP 201) — a FAILED status here is not an
+      // HTTP error, so it must be checked explicitly rather than assumed
+      // successful just because the request didn't throw.
+      if (uploaded.status === 'FAILED') {
+        await this.whatsappApiService.sendTextMessage(
+          user.phoneNumber,
+          "Sorry, I couldn't read the text in that file. Please try a clearer photo or a different file.",
+        );
+        return;
+      }
+
       await this.whatsappApiService.sendTextMessage(
         user.phoneNumber,
         'Got your document! Reading through it now — this usually takes under a minute.',
@@ -109,7 +123,7 @@ export class DocumentIntakeService {
         { activeDocumentId: uploaded.id },
       );
 
-      await this.analysisQueue.add(TRIGGER_ANALYSIS_JOB, {
+      await this.analysisQueue.add(ANALYZE_DOCUMENT_JOB, {
         documentId: uploaded.id,
         conversationId: conversation.id,
         whatsappUserId: user.id,

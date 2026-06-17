@@ -6,8 +6,8 @@ import { LexaiBackendService } from '../lexai-backend/lexai-backend.service';
 import { ConversationService } from '../conversation/conversation.service';
 import { getQueueToken } from '@nestjs/bullmq';
 import {
+  ANALYZE_DOCUMENT_JOB,
   DOCUMENT_ANALYSIS_QUEUE,
-  TRIGGER_ANALYSIS_JOB,
 } from '../queue/queue.constants';
 import { MAX_FILE_SIZE_BYTES } from './document-intake.constants';
 
@@ -72,7 +72,7 @@ describe('DocumentIntakeService', () => {
 
     expect(whatsappApiService.sendTextMessage).toHaveBeenCalledWith(
       user.phoneNumber,
-      expect.stringContaining('PDF documents or JPEG/PNG photos'),
+      expect.stringContaining('PDF, Word (.docx), or JPEG/PNG'),
     );
     expect(whatsappApiService.getMediaMetadata).not.toHaveBeenCalled();
     expect(lexaiBackendService.uploadDocument).not.toHaveBeenCalled();
@@ -110,7 +110,10 @@ describe('DocumentIntakeService', () => {
     whatsappApiService.downloadMedia.mockResolvedValueOnce(
       Buffer.from('pdf-bytes'),
     );
-    lexaiBackendService.uploadDocument.mockResolvedValueOnce({ id: 'doc-1' });
+    lexaiBackendService.uploadDocument.mockResolvedValueOnce({
+      id: 'doc-1',
+      status: 'TEXT_EXTRACTED',
+    });
 
     await service.handleIncomingDocument(user as never, conversation as never, {
       from: user.phoneNumber,
@@ -139,11 +142,41 @@ describe('DocumentIntakeService', () => {
       ConversationState.PROCESSING,
       { activeDocumentId: 'doc-1' },
     );
-    expect(analysisQueue.add).toHaveBeenCalledWith(TRIGGER_ANALYSIS_JOB, {
+    expect(analysisQueue.add).toHaveBeenCalledWith(ANALYZE_DOCUMENT_JOB, {
       documentId: 'doc-1',
       conversationId: 'c1',
       whatsappUserId: 'u1',
     });
+  });
+
+  it('sends a friendly error and does not proceed when upload succeeds but extraction failed', async () => {
+    whatsappApiService.getMediaMetadata.mockResolvedValueOnce({
+      url: 'https://lookaside.fbsbx.com/media/abc',
+      mimeType: 'application/pdf',
+      fileSizeBytes: 1024,
+    });
+    whatsappApiService.downloadMedia.mockResolvedValueOnce(
+      Buffer.from('pdf-bytes'),
+    );
+    lexaiBackendService.uploadDocument.mockResolvedValueOnce({
+      id: 'doc-1',
+      status: 'FAILED',
+    });
+
+    await service.handleIncomingDocument(user as never, conversation as never, {
+      from: user.phoneNumber,
+      messageId: 'wamid.3b',
+      type: 'document',
+      timestamp: '123',
+      document: { id: 'media-3b', mime_type: 'application/pdf' },
+    });
+
+    expect(whatsappApiService.sendTextMessage).toHaveBeenCalledWith(
+      user.phoneNumber,
+      expect.stringContaining("couldn't read the text"),
+    );
+    expect(conversationService.transitionState).not.toHaveBeenCalled();
+    expect(analysisQueue.add).not.toHaveBeenCalled();
   });
 
   it('sends a friendly error and does not enqueue analysis when the backend upload fails', async () => {

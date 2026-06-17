@@ -5,10 +5,18 @@ import { AxiosError } from 'axios';
 import { firstValueFrom } from 'rxjs';
 import FormData from 'form-data';
 
-export type DocumentStatus = 'PROCESSING' | 'ANALYZED' | 'FAILED';
+// Verified directly against the running lexai-backend instance
+// (lexAI-server/src/documents) rather than assumed.
+export type DocumentStatus =
+  | 'UPLOADED'
+  | 'PROCESSING'
+  | 'TEXT_EXTRACTED'
+  | 'ANALYZED'
+  | 'FAILED';
 
 export interface UploadedDocument {
   id: string;
+  status: DocumentStatus;
 }
 
 export interface DocumentRecord {
@@ -16,9 +24,37 @@ export interface DocumentRecord {
   status: DocumentStatus;
 }
 
+export interface AnalysisSummary {
+  purpose: string;
+  mainParties: string[];
+  importantDates: string[];
+  moneyInvolved: string[];
+  responsibilities: string[];
+}
+
+export interface RiskFlag {
+  severity: 'HIGH' | 'MEDIUM' | 'LOW';
+  clauseText: string;
+  explanation: string;
+}
+
+export interface AnalysisResult {
+  documentId: string;
+  summary: AnalysisSummary;
+  riskFlags: RiskFlag[];
+}
+
 // Thin client for the lexai-backend document endpoints this bot bridges to.
 // All document processing/analysis logic lives in lexai-backend; this only
-// makes the HTTP calls (see README "Backend API Contract").
+// makes the HTTP calls. Shapes below were confirmed against the running
+// lexai-backend instance (lexAI-server), not assumed:
+// - POST /documents/upload extracts text synchronously and returns the
+//   document record directly (status is TEXT_EXTRACTED or FAILED on the
+//   same 201 response — a FAILED status is not an HTTP error).
+// - POST /documents/:id/analyze is also synchronous: it runs the AI
+//   analysis inline and returns the full result, or throws 403 (monthly
+//   limit reached), 404, or 422 (text not extracted yet). There is no
+//   "processing" status to poll for on the analysis itself.
 @Injectable()
 export class LexaiBackendService {
   private readonly logger = new Logger(LexaiBackendService.name);
@@ -55,8 +91,8 @@ export class LexaiBackendService {
   async analyzeDocument(
     accessToken: string,
     documentId: string,
-  ): Promise<void> {
-    await this.request(() =>
+  ): Promise<AnalysisResult> {
+    return this.request<AnalysisResult>(() =>
       this.httpService.post(
         `${this.baseUrl}/documents/${documentId}/analyze`,
         {},

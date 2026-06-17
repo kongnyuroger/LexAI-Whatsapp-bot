@@ -38,7 +38,9 @@ describe('LexaiBackendService', () => {
 
   describe('uploadDocument', () => {
     it('posts a multipart form with the file and bearer token', async () => {
-      httpService.post.mockReturnValueOnce(of(axiosResponse({ id: 'doc-1' })));
+      httpService.post.mockReturnValueOnce(
+        of(axiosResponse({ id: 'doc-1', status: 'TEXT_EXTRACTED' })),
+      );
 
       const result = await service.uploadDocument(
         'token-abc',
@@ -47,7 +49,7 @@ describe('LexaiBackendService', () => {
         'application/pdf',
       );
 
-      expect(result).toEqual({ id: 'doc-1' });
+      expect(result).toEqual({ id: 'doc-1', status: 'TEXT_EXTRACTED' });
       expect(httpService.post).toHaveBeenCalledTimes(1);
       const [url, form, options] = httpService.post.mock.calls[0] as [
         string,
@@ -61,11 +63,30 @@ describe('LexaiBackendService', () => {
   });
 
   describe('analyzeDocument', () => {
-    it('triggers analysis for the given document id', async () => {
-      httpService.post.mockReturnValueOnce(of(axiosResponse({})));
+    it('runs analysis synchronously and returns the summary + risk flags', async () => {
+      const analysis = {
+        documentId: 'doc-1',
+        summary: {
+          purpose: 'Residential lease agreement',
+          mainParties: ['Alice', 'Bob'],
+          importantDates: ['2026-01-01'],
+          moneyInvolved: ['$1200/month'],
+          responsibilities: ['Tenant pays rent by the 1st'],
+        },
+        riskFlags: [
+          {
+            severity: 'HIGH',
+            clauseText: 'Tenant waives all rights to dispute eviction.',
+            explanation:
+              'This clause may be unenforceable and is highly unfavorable.',
+          },
+        ],
+      };
+      httpService.post.mockReturnValueOnce(of(axiosResponse(analysis)));
 
-      await service.analyzeDocument('token-abc', 'doc-1');
+      const result = await service.analyzeDocument('token-abc', 'doc-1');
 
+      expect(result).toEqual(analysis);
       expect(httpService.post).toHaveBeenCalledWith(
         'http://backend.test/documents/doc-1/analyze',
         {},

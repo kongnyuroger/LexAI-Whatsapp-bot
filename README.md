@@ -97,8 +97,8 @@ so a user can always type "new"/"restart" — Task 8):
 | `ANALYZED` | `CHATTING`, `PROCESSING` (new document), `IDLE` |
 | `CHATTING` | `CHATTING`, `PROCESSING` (new document), `IDLE` |
 
-`ensureLinkedBackendUser(user)` is the single seam that calls the (currently unbuilt)
-`lexai-backend` `POST /auth/whatsapp-link` endpoint — see "Known Integration Gap" below.
+`ensureLinkedBackendUser(user)` is the single seam that calls `lexai-backend`'s
+`POST /auth/whatsapp-link` endpoint — see "Backend Integration: Service-to-Service Auth" below.
 
 ## Background job queue
 
@@ -121,31 +121,37 @@ When a user sends a photo or PDF while `IDLE`/`AWAITING_DOCUMENT`, `DocumentInta
 (`src/document-intake/document-intake.service.ts`) runs:
 
 1. Validate the mime type from the webhook payload itself (`application/pdf`, `image/jpeg`,
-   `image/png` — see `ALLOWED_MIME_TYPES`) and reject anything else with a friendly WhatsApp
-   reply, with no Graph API or backend call at all.
+   `image/png`, `.docx` — see `ALLOWED_MIME_TYPES`, confirmed against lexai-backend's own upload
+   validator) and reject anything else with a friendly WhatsApp reply, with no Graph API or
+   backend call at all.
 2. Fetch media metadata (`WhatsappApiService.getMediaMetadata`) to check the file size against
-   `MAX_FILE_SIZE_BYTES` (10MB default — adjust once lexai-backend documents its own limit) and
-   reject oversized files the same way, still before calling lexai-backend.
+   `MAX_FILE_SIZE_BYTES` (10MB — confirmed against lexai-backend's `MAX_FILE_BYTES`, not a guess)
+   and reject oversized files the same way, still before calling lexai-backend.
 3. Download the file, call `ensureLinkedBackendUser()`, then `lexai-backend`'s
-   `POST /documents/upload`.
+   `POST /documents/upload`. That endpoint extracts text **synchronously** and can return a
+   `201` with `status: "FAILED"` (extraction failed) even though the HTTP call itself succeeded —
+   checked explicitly, since it's not surfaced as an HTTP error.
 4. Send the acknowledgement reply ("Got your document! Reading through it now...") and transition
    the conversation `-> PROCESSING` with `activeDocumentId` set.
-5. Enqueue a `document-analysis` job (separate BullMQ queue) to trigger and track analysis,
-   decoupled from the fast incoming-message queue since analysis can be slow.
+5. Enqueue an `analyze-document` job (separate BullMQ queue) to run analysis, decoupled from the
+   fast incoming-message queue since the AI call can be slow.
 
-`AnalyzeDocumentProcessor` (`src/document-intake/analyze-document.processor.ts`) then:
+`AnalyzeDocumentProcessor` (`src/document-intake/analyze-document.processor.ts`) then calls
+`POST /documents/:id/analyze` — confirmed **synchronous** on lexai-backend's side (it runs the AI
+analysis inline and returns the full result or a definitive error in one call; there is no
+"processing" status to poll for, unlike what an earlier version of this flow assumed):
 
-- Calls `POST /documents/:id/analyze`, then self-schedules a delayed "poll" job
-  (`POLL_INTERVAL_MS` = 5s) rather than blocking inside one job.
-- Each poll calls `GET /documents/:id`: `ANALYZED` → transition `-> ANALYZED` and notify the user
-  (Task 6 replaces the placeholder reply with the real formatted summary); `FAILED` → transition
-  back to `IDLE` with a friendly error; still processing → re-enqueue another poll, up to
-  `MAX_POLL_ATTEMPTS` (24 × 5s = 2 minutes) before giving up and resetting to `IDLE`.
+- Success → transition `-> ANALYZED` and notify the user (Task 6 replaces the placeholder reply
+  with the real formatted summary).
+- `403` (monthly analysis limit on the free plan) or `404`/`422` (document not found / text not
+  extracted) → transition back to `IDLE` with a specific friendly message; not retried, since
+  these are definitive outcomes for that document.
+- Anything else (network blip, `5xx`) → rethrown so BullMQ retries per the queue's
+  attempts/backoff config; if every retry is exhausted, `onFailed` resets the conversation to
+  `IDLE` and notifies the user, so it never gets stuck silently in `PROCESSING`.
 
-Any failure during steps 1-5 above (including `ensureLinkedBackendUser()` rejecting because
-`POST /auth/whatsapp-link` doesn't exist yet in `lexai-backend`) is caught, logged with context,
-and reported to the user as a generic friendly error — the conversation stays in its current
-state rather than getting stuck in a falsely-`PROCESSING` limbo.
+Any failure during the upload steps above is caught, logged with context, and reported to the
+user as a generic friendly error.
 
 ## Environment variables
 
@@ -155,56 +161,54 @@ state rather than getting stuck in a falsely-`PROCESSING` limbo.
 | `DATABASE_URL` | Postgres connection string (Prisma) |
 | `REDIS_URL` | Redis connection string (BullMQ) |
 | `LEXAI_BACKEND_URL` | Base URL of `lexai-backend` |
-| `LEXAI_WHATSAPP_LINK_SECRET` | Shared secret for the proposed `POST /auth/whatsapp-link` endpoint (not yet implemented in `lexai-backend`) |
+| `LEXAI_SERVICE_API_KEY` | Shared secret sent as the `X-Service-Key` header to `lexai-backend`'s `POST /auth/whatsapp-link`. Must match lexai-backend's own `SERVICE_API_KEY` env var |
 | `WHATSAPP_VERIFY_TOKEN` | Shared secret used to verify the Meta webhook subscription challenge |
 | `WHATSAPP_ACCESS_TOKEN` | Permanent access token for a System User on the Meta App |
 | `WHATSAPP_PHONE_NUMBER_ID` | Phone Number ID from the Meta App's WhatsApp API Setup page |
 | `WHATSAPP_BUSINESS_ACCOUNT_ID` | WhatsApp Business Account (WABA) ID |
 
-## Known Integration Gap
+## Backend Integration: Service-to-Service Auth
 
-**`lexai-backend` currently has no concept of a WhatsApp-linked identity or a service-to-service
-API key.** Its only auth mechanism is user email/password JWT login. This bot, however, needs to
-act on behalf of a user identified solely by a phone number — there is no email/password to log in
-with, and no human is typing credentials into a form.
+Task 1's initial gap analysis (written before this bot had a running `lexai-backend` to check
+against) proposed a `POST /auth/whatsapp-link` endpoint, guessing at a body-based shared secret.
+Once `lexai-backend` was actually running locally, inspecting it directly
+(`lexAI-server/src/auth/`) showed the endpoint **already exists** — independently built with a
+similar goal but a different mechanism. This section documents the real, verified contract.
 
-This is a real gap, not an oversight to design around silently. It is called out here explicitly
-so it can be tracked as a required follow-up task in the `lexai-backend` repo.
-
-### Proposed solution
-
-Add a new endpoint to `lexai-backend`:
+### The real contract
 
 ```
 POST /auth/whatsapp-link
-Body:     { "phoneNumber": "+237...", "secret": "<shared service secret>" }
-Response: { "userId": "...", "accessToken": "<JWT>" }
+Header:   X-Service-Key: <SERVICE_API_KEY>
+Body:     { "phoneNumber": "+237...", "displayName"?: "..." }
+Response: { "accessToken": "<JWT, 15min>", "refreshToken": "<JWT, 7d>", "user": { "id": "...", ... } }
 ```
 
-Behavior:
+- Guarded by `ServiceAuthGuard`: a single static shared secret (`SERVICE_API_KEY` on
+  `lexai-backend`, sent here as `LEXAI_SERVICE_API_KEY`) compared in constant time. This proves
+  *which service* is calling, not which end-user — endpoints behind it (like this one) take an
+  explicit `phoneNumber` for who they're acting on behalf of.
+- Idempotent: repeated calls for the same `phoneNumber` find-or-create the same `User` row and
+  issue a fresh token pair — never a duplicate user.
+- **Access tokens expire after 15 minutes.** Rather than tracking expiry and implementing
+  refresh-token rotation, `ensureLinkedBackendUser()` calls this endpoint fresh every time a
+  backend-authenticated call is about to be made, instead of caching the token on `WhatsappUser`.
+  Simpler and more robust for an MVP, given linking itself is documented as cheap and idempotent.
+- WhatsApp-linked users and email/password-registered users are deliberately **not** merged: they
+  are separate `User` rows keyed by `phoneNumber` vs `email` respectively. lexai-backend's own
+  README documents this as a known simplification, not an oversight.
 
-- Looks up a `User` by `phoneNumber` (requires adding a unique, nullable `phoneNumber` column to
-  the existing `User` model).
-- Creates one if it doesn't exist yet (no password set; the row is flagged as bot-linked, e.g. via
-  an `authProvider: 'whatsapp'` field).
-- Returns the same JWT shape as the normal email/password login, so every existing guard,
-  controller, and downstream service in `lexai-backend` keeps working unmodified.
-- The endpoint itself is protected by a shared `secret` (an env var both services know), so it
-  cannot be called by arbitrary clients to mint tokens for any phone number.
+### Other contract details confirmed the same way (by reading lexai-backend directly)
 
-**Why this approach over an internal API key / "act as any user" header:** it reuses the existing
-JWT auth path end-to-end instead of adding a second, parallel trust boundary into
-`lexai-backend`. The only new attack surface is the linking endpoint itself, which is narrow and
-easy to reason about (it can only ever mint a token for the *one* phone number in the request,
-guarded by a shared secret) — versus a generic "trusted caller can impersonate any user" key,
-which has a much larger blast radius if it ever leaks.
-
-### Current state in this repo
-
-Until that endpoint exists in `lexai-backend`, this bot cannot actually obtain a usable access
-token. This is tracked as an explicit seam: `ConversationService.ensureLinkedBackendUser()`
-(introduced in Task 3) is the single method that calls this endpoint, so swapping in the real
-integration once it ships in `lexai-backend` requires changing only that one method.
+- `POST /documents/upload` accepts PDF, DOCX, and JPEG/PNG, max 10MB — extracts text
+  **synchronously** as part of the same request. A `201` response can still carry
+  `status: "FAILED"` if extraction failed; that's not surfaced as an HTTP error.
+- `POST /documents/:id/analyze` is also **synchronous**: it runs the AI analysis inline and
+  returns `{ summary: { purpose, mainParties[], importantDates[], moneyInvolved[],
+  responsibilities[] }, riskFlags: [{ severity: 'HIGH'|'MEDIUM'|'LOW', clauseText, explanation }] }`
+  directly, or throws `403` (free-plan monthly limit), `404`, or `422` (text not extracted yet).
+  There is no "processing" status to poll for on the analysis itself — see "Document intake flow"
+  above for how this bot's earlier (poll-based) design was corrected once this was confirmed.
 
 ## Project status
 

@@ -39,7 +39,7 @@ describe('ConversationService', () => {
 
   const config: Record<string, string> = {
     LEXAI_BACKEND_URL: 'http://backend.test',
-    LEXAI_WHATSAPP_LINK_SECRET: 'shared-secret',
+    LEXAI_SERVICE_API_KEY: 'shared-secret',
   };
 
   beforeEach(async () => {
@@ -219,18 +219,33 @@ describe('ConversationService', () => {
   });
 
   describe('ensureLinkedBackendUser', () => {
-    it('returns the user unchanged if already linked', async () => {
+    it('always calls whatsapp-link, even if a token is already cached (15min expiry)', async () => {
       const user = {
         id: 'u1',
         phoneNumber: '+237600000000',
         lexaiUserId: 'backend-1',
-        lexaiAccessToken: 'token-abc',
+        lexaiAccessToken: 'stale-token',
       };
+      httpService.post.mockReturnValueOnce(
+        of(
+          axiosResponse({
+            accessToken: 'fresh-token',
+            refreshToken: 'refresh-token',
+            user: { id: 'backend-1' },
+          }),
+        ),
+      );
+      const updated = { ...user, lexaiAccessToken: 'fresh-token' };
+      prisma.whatsappUser.update.mockResolvedValueOnce(updated);
 
       const result = await service.ensureLinkedBackendUser(user as never);
 
-      expect(result).toBe(user);
-      expect(httpService.post).not.toHaveBeenCalled();
+      expect(httpService.post).toHaveBeenCalledWith(
+        'http://backend.test/auth/whatsapp-link',
+        { phoneNumber: '+237600000000' },
+        { headers: { 'X-Service-Key': 'shared-secret' } },
+      );
+      expect(result).toBe(updated);
     });
 
     it('calls the whatsapp-link endpoint and persists the returned token', async () => {
@@ -241,7 +256,13 @@ describe('ConversationService', () => {
         lexaiAccessToken: null,
       };
       httpService.post.mockReturnValueOnce(
-        of(axiosResponse({ userId: 'backend-1', accessToken: 'new-token' })),
+        of(
+          axiosResponse({
+            accessToken: 'new-token',
+            refreshToken: 'refresh-token',
+            user: { id: 'backend-1' },
+          }),
+        ),
       );
       const updated = {
         ...user,
@@ -254,7 +275,8 @@ describe('ConversationService', () => {
 
       expect(httpService.post).toHaveBeenCalledWith(
         'http://backend.test/auth/whatsapp-link',
-        { phoneNumber: '+237600000000', secret: 'shared-secret' },
+        { phoneNumber: '+237600000000' },
+        { headers: { 'X-Service-Key': 'shared-secret' } },
       );
       expect(prisma.whatsappUser.update).toHaveBeenCalledWith({
         where: { id: 'u1' },
@@ -263,22 +285,22 @@ describe('ConversationService', () => {
       expect(result).toBe(updated);
     });
 
-    it('propagates the error when the backend endpoint is unavailable (not yet implemented)', async () => {
+    it('propagates the error when the service API key is rejected', async () => {
       const user = {
         id: 'u1',
         phoneNumber: '+237600000000',
         lexaiUserId: null,
         lexaiAccessToken: null,
       };
-      const error = new AxiosError('Not Found');
+      const error = new AxiosError('Unauthorized');
       error.response = axiosResponse({
-        message: 'Cannot POST /auth/whatsapp-link',
+        message: 'Invalid or missing service API key',
       });
       httpService.post.mockReturnValueOnce(throwError(() => error));
 
       await expect(
         service.ensureLinkedBackendUser(user as never),
-      ).rejects.toThrow('Not Found');
+      ).rejects.toThrow('Unauthorized');
       expect(prisma.whatsappUser.update).not.toHaveBeenCalled();
     });
   });
