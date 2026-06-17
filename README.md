@@ -41,6 +41,33 @@ npm run start:dev
 
 Health check: `GET http://localhost:3000/health` → `{ "status": "ok", "timestamp": "..." }`
 
+## WhatsApp webhook
+
+This bot exposes `GET/POST /webhook` for the Meta WhatsApp Cloud API (Graph API `v25.0`, confirmed
+current as of June 2026):
+
+- `GET /webhook` — handles Meta's one-time webhook verification handshake. Meta sends
+  `hub.mode`, `hub.verify_token`, and `hub.challenge` as query params; this endpoint echoes back
+  `hub.challenge` with `200 OK` if `hub.verify_token` matches `WHATSAPP_VERIFY_TOKEN`, otherwise
+  responds `403`.
+- `POST /webhook` — receives real-time message notifications. The payload shape is validated
+  against the documented Cloud API webhook structure (`object` / `entry[].changes[].value`).
+  Meta requires a fast acknowledgement or it will retry and eventually disable the webhook, so
+  for now this handler only validates and logs the parsed message (sender, type, content/media
+  id) — background job processing is added in Task 4.
+
+`WhatsappApiService` (`src/whatsapp/whatsapp-api.service.ts`) wraps the three Graph API calls this
+bot needs:
+
+- `getMediaUrl(mediaId)` — resolves a webhook media id to a short-lived (5 minute) download URL.
+- `downloadMedia(mediaUrl)` — downloads the actual file bytes as a `Buffer`.
+- `sendTextMessage(to, body)` — sends a free-form text message. Only deliverable within
+  WhatsApp's 24-hour customer service window (i.e. within 24h of the user's last inbound
+  message).
+- `sendTemplateMessage(to, templateName, languageCode, components?)` — sends a pre-approved
+  template message, for first contact or to re-engage outside the 24-hour window. Templates must
+  already exist and be approved in the Meta Business Manager.
+
 ## Environment variables
 
 | Variable | Description |
@@ -105,7 +132,7 @@ This is an MVP built incrementally, one numbered task per commit. See commit his
 implemented so far.
 
 - [x] Task 1 — Project initialization, tooling, backend auth gap analysis
-- [ ] Task 2 — WhatsApp Cloud API client
+- [x] Task 2 — WhatsApp Cloud API client
 - [ ] Task 3 — Conversation state & user linking
 - [ ] Task 4 — Background job queue for webhook processing
 - [ ] Task 5 — Document intake flow
