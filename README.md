@@ -141,8 +141,8 @@ When a user sends a photo or PDF while `IDLE`/`AWAITING_DOCUMENT`, `DocumentInta
 analysis inline and returns the full result or a definitive error in one call; there is no
 "processing" status to poll for, unlike what an earlier version of this flow assumed):
 
-- Success → transition `-> ANALYZED` and notify the user (Task 6 replaces the placeholder reply
-  with the real formatted summary).
+- Success → transition `-> ANALYZED` and send the formatted summary + risk flags (see "Analysis
+  result formatting" below).
 - `403` (monthly analysis limit on the free plan) or `404`/`422` (document not found / text not
   extracted) → transition back to `IDLE` with a specific friendly message; not retried, since
   these are definitive outcomes for that document.
@@ -152,6 +152,25 @@ analysis inline and returns the full result or a definitive error in one call; t
 
 Any failure during the upload steps above is caught, logged with context, and reported to the
 user as a generic friendly error.
+
+## Analysis result formatting
+
+WhatsApp has no rich UI for structured data, so `AnalysisFormatterService`
+(`src/analysis-formatter/analysis-formatter.service.ts`) converts a `lexai-backend` analysis
+result into a sequence of plain-text messages, sent in order once analysis succeeds:
+
+1. **Summary** — purpose, parties, key dates, money involved, and key responsibilities.
+2. **Risk flags** — grouped by severity, using emoji as the WhatsApp equivalent of the web app's
+   colored risk `Badge` component (no colored UI exists here): 🔴 High, 🟠 Medium, 🟢 Low. A
+   document with zero risk flags gets a reassuring "no major risks" message instead.
+3. **Closing** — a nudge that the user can now ask questions, plus the standard "this is
+   information, not legal advice" disclaimer.
+
+Each message is split if it would exceed `SAFE_MESSAGE_LENGTH` (1500 characters — a practical,
+readable chunk size well under the Cloud API's hard `4096` character limit for free-form session
+messages, confirmed June 2026), splitting on line boundaries first and falling back to
+word-wrapping for any single line that alone exceeds the limit (e.g. an unusually long risk
+explanation).
 
 ## Environment variables
 
@@ -220,7 +239,7 @@ implemented so far.
 - [x] Task 3 — Conversation state & user linking
 - [x] Task 4 — Background job queue for webhook processing
 - [x] Task 5 — Document intake flow
-- [ ] Task 6 — Sending analysis results as WhatsApp messages
+- [x] Task 6 — Sending analysis results as WhatsApp messages
 - [ ] Task 7 — Document chat via WhatsApp
 - [ ] Task 8 — Onboarding, help & error messaging
 - [ ] Task 9 — Observability, rate limiting & security hardening

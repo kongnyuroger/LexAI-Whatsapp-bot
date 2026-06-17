@@ -5,7 +5,11 @@ import { AxiosError } from 'axios';
 import { ConversationState } from '@prisma/client';
 import { ConversationService } from '../conversation/conversation.service';
 import { WhatsappApiService } from '../whatsapp/whatsapp-api.service';
-import { LexaiBackendService } from '../lexai-backend/lexai-backend.service';
+import {
+  AnalysisResult,
+  LexaiBackendService,
+} from '../lexai-backend/lexai-backend.service';
+import { AnalysisFormatterService } from '../analysis-formatter/analysis-formatter.service';
 import { AnalyzeDocumentJobData } from './analyze-document.types';
 import { DOCUMENT_ANALYSIS_QUEUE } from '../queue/queue.constants';
 
@@ -22,6 +26,7 @@ export class AnalyzeDocumentProcessor extends WorkerHost {
     private readonly conversationService: ConversationService,
     private readonly whatsappApiService: WhatsappApiService,
     private readonly lexaiBackendService: LexaiBackendService,
+    private readonly analysisFormatterService: AnalysisFormatterService,
   ) {
     super();
   }
@@ -37,8 +42,9 @@ export class AnalyzeDocumentProcessor extends WorkerHost {
       return;
     }
 
+    let analysis: AnalysisResult;
     try {
-      await this.lexaiBackendService.analyzeDocument(
+      analysis = await this.lexaiBackendService.analyzeDocument(
         user.lexaiAccessToken,
         documentId,
       );
@@ -67,16 +73,17 @@ export class AnalyzeDocumentProcessor extends WorkerHost {
       throw error;
     }
 
-    // TODO(Task 6): fetch the formatted summary + risk flags and send those
-    // instead of this placeholder reply.
     await this.conversationService.transitionState(
       conversationId,
       ConversationState.ANALYZED,
     );
-    await this.whatsappApiService.sendTextMessage(
-      user.phoneNumber,
-      'Your document is ready! Ask me anything about it.',
-    );
+
+    // Sent sequentially (not in parallel) so they arrive in the WhatsApp
+    // thread in reading order: summary, then risk flags, then the closing
+    // nudge + disclaimer.
+    for (const message of this.analysisFormatterService.format(analysis)) {
+      await this.whatsappApiService.sendTextMessage(user.phoneNumber, message);
+    }
   }
 
   private async givenUp(

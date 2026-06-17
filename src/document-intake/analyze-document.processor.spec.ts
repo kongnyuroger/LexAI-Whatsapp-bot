@@ -6,6 +6,7 @@ import { AnalyzeDocumentProcessor } from './analyze-document.processor';
 import { ConversationService } from '../conversation/conversation.service';
 import { WhatsappApiService } from '../whatsapp/whatsapp-api.service';
 import { LexaiBackendService } from '../lexai-backend/lexai-backend.service';
+import { AnalysisFormatterService } from '../analysis-formatter/analysis-formatter.service';
 import { AnalyzeDocumentJobData } from './analyze-document.types';
 
 function axiosResponse<T>(data: T): AxiosResponse<T> {
@@ -38,6 +39,7 @@ describe('AnalyzeDocumentProcessor', () => {
   };
   let whatsappApiService: { sendTextMessage: jest.Mock };
   let lexaiBackendService: { analyzeDocument: jest.Mock };
+  let analysisFormatterService: { format: jest.Mock };
 
   const user = {
     id: 'u1',
@@ -52,6 +54,7 @@ describe('AnalyzeDocumentProcessor', () => {
     };
     whatsappApiService = { sendTextMessage: jest.fn() };
     lexaiBackendService = { analyzeDocument: jest.fn() };
+    analysisFormatterService = { format: jest.fn().mockReturnValue([]) };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -59,18 +62,28 @@ describe('AnalyzeDocumentProcessor', () => {
         { provide: ConversationService, useValue: conversationService },
         { provide: WhatsappApiService, useValue: whatsappApiService },
         { provide: LexaiBackendService, useValue: lexaiBackendService },
+        {
+          provide: AnalysisFormatterService,
+          useValue: analysisFormatterService,
+        },
       ],
     }).compile();
 
     processor = module.get<AnalyzeDocumentProcessor>(AnalyzeDocumentProcessor);
   });
 
-  it('transitions to ANALYZED and notifies the user when analysis succeeds', async () => {
-    lexaiBackendService.analyzeDocument.mockResolvedValueOnce({
+  it('transitions to ANALYZED and sends the formatted messages when analysis succeeds', async () => {
+    const analysis = {
       documentId: 'doc-1',
       summary: { purpose: 'Lease' },
       riskFlags: [],
-    });
+    };
+    lexaiBackendService.analyzeDocument.mockResolvedValueOnce(analysis);
+    analysisFormatterService.format.mockReturnValueOnce([
+      'Summary message',
+      'Risk flags message',
+      'Closing message',
+    ]);
 
     await processor.process(
       makeJob({
@@ -88,10 +101,12 @@ describe('AnalyzeDocumentProcessor', () => {
       'c1',
       ConversationState.ANALYZED,
     );
-    expect(whatsappApiService.sendTextMessage).toHaveBeenCalledWith(
-      user.phoneNumber,
-      expect.stringContaining('ready'),
-    );
+    expect(analysisFormatterService.format).toHaveBeenCalledWith(analysis);
+    expect(whatsappApiService.sendTextMessage.mock.calls).toEqual([
+      [user.phoneNumber, 'Summary message'],
+      [user.phoneNumber, 'Risk flags message'],
+      [user.phoneNumber, 'Closing message'],
+    ]);
   });
 
   it('resets to IDLE with a plan-limit message on 403, without retrying', async () => {
