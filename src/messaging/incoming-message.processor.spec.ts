@@ -5,6 +5,7 @@ import { IncomingMessageProcessor } from './incoming-message.processor';
 import { ConversationService } from '../conversation/conversation.service';
 import { WhatsappApiService } from '../whatsapp/whatsapp-api.service';
 import { DocumentIntakeService } from '../document-intake/document-intake.service';
+import { DocumentChatService } from '../document-chat/document-chat.service';
 import { IncomingMessageJobData } from './incoming-message.types';
 
 function makeJob(data: IncomingMessageJobData): Job<IncomingMessageJobData> {
@@ -16,11 +17,13 @@ describe('IncomingMessageProcessor', () => {
   let conversationService: { getOrCreateForPhoneNumber: jest.Mock };
   let whatsappApiService: { sendTextMessage: jest.Mock };
   let documentIntakeService: { handleIncomingDocument: jest.Mock };
+  let documentChatService: { handleIncomingMessage: jest.Mock };
 
   beforeEach(async () => {
     conversationService = { getOrCreateForPhoneNumber: jest.fn() };
     whatsappApiService = { sendTextMessage: jest.fn() };
     documentIntakeService = { handleIncomingDocument: jest.fn() };
+    documentChatService = { handleIncomingMessage: jest.fn() };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -28,6 +31,7 @@ describe('IncomingMessageProcessor', () => {
         { provide: ConversationService, useValue: conversationService },
         { provide: WhatsappApiService, useValue: whatsappApiService },
         { provide: DocumentIntakeService, useValue: documentIntakeService },
+        { provide: DocumentChatService, useValue: documentChatService },
       ],
     }).compile();
 
@@ -79,41 +83,41 @@ describe('IncomingMessageProcessor', () => {
     );
   });
 
-  it('routes free-form text while CHATTING through the chat placeholder', async () => {
+  it('delegates free-form text while CHATTING to DocumentChatService', async () => {
     withConversationState(ConversationState.CHATTING);
+    const job = makeJob({
+      from: '237600000000',
+      messageId: 'wamid.3',
+      type: 'text',
+      timestamp: '123',
+      text: { body: 'What does clause 4 mean?' },
+    });
 
-    await processor.process(
-      makeJob({
-        from: '237600000000',
-        messageId: 'wamid.3',
-        type: 'text',
-        timestamp: '123',
-        text: { body: 'What does clause 4 mean?' },
-      }),
-    );
+    await processor.process(job);
 
-    expect(whatsappApiService.sendTextMessage).toHaveBeenCalledWith(
-      '237600000000',
-      'Got it, processing...',
+    expect(documentChatService.handleIncomingMessage).toHaveBeenCalledWith(
+      { id: 'u1', phoneNumber: '237600000000' },
+      { id: 'c1', state: ConversationState.CHATTING },
+      job.data,
     );
   });
 
-  it('routes a new document sent while ANALYZED through the placeholder', async () => {
+  it('delegates a new document sent while ANALYZED to DocumentIntakeService (starts a new analysis)', async () => {
     withConversationState(ConversationState.ANALYZED);
+    const job = makeJob({
+      from: '237600000000',
+      messageId: 'wamid.4',
+      type: 'image',
+      timestamp: '123',
+      image: { id: 'media-2', mime_type: 'image/jpeg' },
+    });
 
-    await processor.process(
-      makeJob({
-        from: '237600000000',
-        messageId: 'wamid.4',
-        type: 'image',
-        timestamp: '123',
-        image: { id: 'media-2', mime_type: 'image/jpeg' },
-      }),
-    );
+    await processor.process(job);
 
-    expect(whatsappApiService.sendTextMessage).toHaveBeenCalledWith(
-      '237600000000',
-      'Got it, processing...',
+    expect(documentIntakeService.handleIncomingDocument).toHaveBeenCalledWith(
+      { id: 'u1', phoneNumber: '237600000000' },
+      { id: 'c1', state: ConversationState.ANALYZED },
+      job.data,
     );
   });
 

@@ -110,10 +110,12 @@ BullMQ queue (`src/queue/queue.module.ts`) backed by Redis:
   the failed set (capped at the most recent 1000) — this repo's dead-letter handling, since BullMQ
   has no separate DLQ concept. Failures are logged with the job id, message id, and sender so they
   stay debuggable.
-- The processor routes by `(conversation.state, message.type)`. The IDLE/AWAITING_DOCUMENT +
-  media branch now runs the real document intake flow (below); the remaining branches still send
-  a placeholder reply ("Got it, processing...") with a `TODO(Task N)` pointing at the real logic
-  (document chat in Task 7, onboarding copy in Task 8).
+- The processor routes by `(conversation.state, message.type)`. IDLE/AWAITING_DOCUMENT + media
+  runs document intake (below); ANALYZED/CHATTING + text runs document chat (below);
+  ANALYZED/CHATTING + media starts a new analysis (sending a new file is treated as "analyze this
+  instead", not a confirmation prompt — both states already allow transitioning to `PROCESSING`).
+  The remaining branches (IDLE/AWAITING_DOCUMENT + text, PROCESSING + anything) still send a
+  placeholder/status reply, with onboarding/help copy as a `TODO(Task 8)`.
 
 ## Document intake flow
 
@@ -168,9 +170,29 @@ result into a sequence of plain-text messages, sent in order once analysis succe
 
 Each message is split if it would exceed `SAFE_MESSAGE_LENGTH` (1500 characters — a practical,
 readable chunk size well under the Cloud API's hard `4096` character limit for free-form session
-messages, confirmed June 2026), splitting on line boundaries first and falling back to
+messages, confirmed June 2026) via `splitWhatsappMessage()`
+(`src/common/whatsapp-text.util.ts`), splitting on line boundaries first and falling back to
 word-wrapping for any single line that alone exceeds the limit (e.g. an unusually long risk
-explanation).
+explanation). Document chat replies (below) reuse this same shared utility.
+
+## Document chat flow
+
+Once a conversation is `ANALYZED` or `CHATTING`, a text message is forwarded to
+`DocumentChatService` (`src/document-chat/document-chat.service.ts`):
+
+1. If the incoming message has no text body (e.g. a sticker), ask the user to send their question
+   as text — no backend call.
+2. Defensively check `conversation.activeDocumentId` is set (it always should be, by this point in
+   the state machine) before calling the backend at all.
+3. Call `ensureLinkedBackendUser()`, then `lexai-backend`'s `POST /documents/:id/chat` with
+   `{ message }`. Confirmed **synchronous** on lexai-backend's side (`lexAI-server/src/chat`): it
+   runs RAG-grounded Q&A inline and returns `{ message: { role: 'assistant', content, ... } }` or
+   throws `404`/`422` in one call — same shape as analyze, but with no usage-limit guard.
+4. On success: transition `-> CHATTING` (a no-op transition if already `CHATTING`) and send the
+   assistant's answer, split via `splitWhatsappMessage()` if it's long.
+5. `404`/`422` → transition back to `IDLE` with a friendly message (the document this conversation
+   was pointing at is no longer usable); anything else is rethrown so BullMQ retries per the
+   incoming-message queue's attempts/backoff config.
 
 ## Environment variables
 
@@ -246,6 +268,9 @@ that's corrected now to match:
   directly, or throws `403` (free-plan monthly limit), `404`, or `422` (text not extracted yet).
   There is no "processing" status to poll for on the analysis itself — see "Document intake flow"
   above for how this bot's earlier (poll-based) design was corrected once this was confirmed.
+- `POST /documents/:id/chat` (and `GET /documents/:id/chat` for history, not currently called by
+  this bot) is synchronous too: `{ message }` in, `{ message: { role: 'assistant', content,
+  ... } }` out, or `404`/`422`. No usage-limit guard applies to chat, unlike analyze.
 
 ## Project status
 
@@ -258,7 +283,7 @@ implemented so far.
 - [x] Task 4 — Background job queue for webhook processing
 - [x] Task 5 — Document intake flow
 - [x] Task 6 — Sending analysis results as WhatsApp messages
-- [ ] Task 7 — Document chat via WhatsApp
+- [x] Task 7 — Document chat via WhatsApp
 - [ ] Task 8 — Onboarding, help & error messaging
 - [ ] Task 9 — Observability, rate limiting & security hardening
 - [ ] Task 10 — Testing & CI

@@ -120,4 +120,41 @@ describe('LexaiBackendService', () => {
       );
     });
   });
+
+  describe('sendChatMessage', () => {
+    it('posts the question and returns the assistant message', async () => {
+      const assistantMessage = {
+        id: 'msg-1',
+        role: 'assistant',
+        content: 'The notice period is 30 days.',
+        createdAt: '2026-06-17T12:00:00.000Z',
+      };
+      httpService.post.mockReturnValueOnce(
+        of(axiosResponse({ message: assistantMessage })),
+      );
+
+      const result = await service.sendChatMessage(
+        'token-abc',
+        'doc-1',
+        'What is the notice period?',
+      );
+
+      expect(result).toEqual(assistantMessage);
+      expect(httpService.post).toHaveBeenCalledWith(
+        'http://backend.test/documents/doc-1/chat',
+        { message: 'What is the notice period?' },
+        { headers: { Authorization: 'Bearer token-abc' } },
+      );
+    });
+
+    it('propagates errors from the backend (e.g. 404 document not found)', async () => {
+      const error = new AxiosError('Not Found');
+      error.response = axiosResponse({ message: 'Document not found' });
+      httpService.post.mockReturnValueOnce(throwError(() => error));
+
+      await expect(
+        service.sendChatMessage('token-abc', 'doc-1', 'hello?'),
+      ).rejects.toThrow('Not Found');
+    });
+  });
 });

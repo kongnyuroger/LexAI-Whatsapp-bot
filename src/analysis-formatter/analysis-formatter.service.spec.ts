@@ -1,7 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { AnalysisFormatterService } from './analysis-formatter.service';
 import { AnalysisResult } from '../lexai-backend/lexai-backend.service';
-import { SAFE_MESSAGE_LENGTH } from './analysis-formatter.constants';
+import { SAFE_MESSAGE_LENGTH } from '../common/whatsapp-text.util';
 
 describe('AnalysisFormatterService', () => {
   let service: AnalysisFormatterService;

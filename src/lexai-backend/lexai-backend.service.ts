@@ -44,6 +44,17 @@ export interface AnalysisResult {
   riskFlags: RiskFlag[];
 }
 
+export interface ChatMessage {
+  id: string;
+  role: 'user' | 'assistant';
+  content: string;
+  createdAt: string;
+}
+
+interface SendChatMessageResponse {
+  message: ChatMessage;
+}
+
 // Thin client for the lexai-backend document endpoints this bot bridges to.
 // All document processing/analysis logic lives in lexai-backend; this only
 // makes the HTTP calls. Shapes below were confirmed against the running
@@ -55,6 +66,10 @@ export interface AnalysisResult {
 //   analysis inline and returns the full result, or throws 403 (monthly
 //   limit reached), 404, or 422 (text not extracted yet). There is no
 //   "processing" status to poll for on the analysis itself.
+// - POST /documents/:id/chat is synchronous too: it runs RAG-grounded Q&A
+//   inline and returns { message: { id, role: 'assistant', content,
+//   createdAt } }, or throws 404 (document not found) or 422 (text not
+//   extracted yet). No usage-limit guard applies here (unlike analyze).
 @Injectable()
 export class LexaiBackendService {
   private readonly logger = new Logger(LexaiBackendService.name);
@@ -110,6 +125,21 @@ export class LexaiBackendService {
         headers: this.authHeaders(accessToken),
       }),
     );
+  }
+
+  async sendChatMessage(
+    accessToken: string,
+    documentId: string,
+    message: string,
+  ): Promise<ChatMessage> {
+    const response = await this.request<SendChatMessageResponse>(() =>
+      this.httpService.post(
+        `${this.baseUrl}/documents/${documentId}/chat`,
+        { message },
+        { headers: this.authHeaders(accessToken) },
+      ),
+    );
+    return response.message;
   }
 
   private async request<T>(

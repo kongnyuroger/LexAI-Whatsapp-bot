@@ -5,11 +5,11 @@ import {
   RiskFlag,
 } from '../lexai-backend/lexai-backend.service';
 import {
-  SAFE_MESSAGE_LENGTH,
   SEVERITY_EMOJI,
   SEVERITY_LABEL,
   SEVERITY_ORDER,
 } from './analysis-formatter.constants';
+import { splitWhatsappMessage } from '../common/whatsapp-text.util';
 
 // Converts a lexai-backend analysis result into the sequence of WhatsApp
 // text messages this bot sends back, since WhatsApp has no rich UI for
@@ -21,8 +21,8 @@ import {
 export class AnalysisFormatterService {
   format(analysis: AnalysisResult): string[] {
     return [
-      ...this.splitMessage(this.formatSummary(analysis.summary)),
-      ...this.splitMessage(this.formatRiskFlags(analysis.riskFlags)),
+      ...splitWhatsappMessage(this.formatSummary(analysis.summary)),
+      ...splitWhatsappMessage(this.formatRiskFlags(analysis.riskFlags)),
       this.formatClosing(),
     ];
   }
@@ -89,60 +89,5 @@ export class AnalysisFormatterService {
       '',
       '_This is general information, not legal advice. Consult a qualified lawyer for advice on your specific situation._',
     ].join('\n');
-  }
-
-  private splitMessage(
-    text: string,
-    maxLength = SAFE_MESSAGE_LENGTH,
-  ): string[] {
-    if (text.length <= maxLength) {
-      return [text];
-    }
-
-    const chunks: string[] = [];
-    let current = '';
-
-    for (const rawLine of text.split('\n')) {
-      for (const line of this.wrapLongLine(rawLine, maxLength)) {
-        const candidate = current ? `${current}\n${line}` : line;
-        if (candidate.length > maxLength && current) {
-          chunks.push(current);
-          current = line;
-        } else {
-          current = candidate;
-        }
-      }
-    }
-    if (current) {
-      chunks.push(current);
-    }
-
-    return chunks;
-  }
-
-  // Falls back to word-wrapping a single line that alone exceeds maxLength
-  // (e.g. an unusually long risk explanation), so splitMessage never emits
-  // a chunk longer than maxLength.
-  private wrapLongLine(line: string, maxLength: number): string[] {
-    if (line.length <= maxLength) {
-      return [line];
-    }
-
-    const wrapped: string[] = [];
-    let current = '';
-    for (const word of line.split(' ')) {
-      const candidate = current ? `${current} ${word}` : word;
-      if (candidate.length > maxLength && current) {
-        wrapped.push(current);
-        current = word;
-      } else {
-        current = candidate;
-      }
-    }
-    if (current) {
-      wrapped.push(current);
-    }
-
-    return wrapped;
   }
 }

@@ -5,6 +5,7 @@ import { ConversationState } from '@prisma/client';
 import { ConversationService } from '../conversation/conversation.service';
 import { WhatsappApiService } from '../whatsapp/whatsapp-api.service';
 import { DocumentIntakeService } from '../document-intake/document-intake.service';
+import { DocumentChatService } from '../document-chat/document-chat.service';
 import { INCOMING_MESSAGE_QUEUE } from '../queue/queue.constants';
 import { IncomingMessageJobData } from './incoming-message.types';
 
@@ -18,6 +19,7 @@ export class IncomingMessageProcessor extends WorkerHost {
     private readonly conversationService: ConversationService,
     private readonly whatsappApiService: WhatsappApiService,
     private readonly documentIntakeService: DocumentIntakeService,
+    private readonly documentChatService: DocumentChatService,
   ) {
     super();
   }
@@ -60,18 +62,19 @@ export class IncomingMessageProcessor extends WorkerHost {
       case ConversationState.ANALYZED:
       case ConversationState.CHATTING:
         if (isMedia) {
-          // TODO(Task 7): confirm whether the user wants to start a new analysis
-          // or keep discussing the current document, instead of silently switching.
-          await this.whatsappApiService.sendTextMessage(
-            from,
-            'Got it, processing...',
+          // Sending a new file while already analyzed/chatting is treated as
+          // "analyze this instead" rather than asking for confirmation first
+          // — both states already allow transitioning straight to PROCESSING.
+          await this.documentIntakeService.handleIncomingDocument(
+            user,
+            conversation,
+            job.data,
           );
         } else {
-          // TODO(Task 7): forward the message to lexai-backend's document chat
-          // endpoint using conversation.activeDocumentId and reply with the answer.
-          await this.whatsappApiService.sendTextMessage(
-            from,
-            'Got it, processing...',
+          await this.documentChatService.handleIncomingMessage(
+            user,
+            conversation,
+            job.data,
           );
         }
         break;
