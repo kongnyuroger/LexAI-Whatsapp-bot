@@ -81,6 +81,7 @@ export class ConversationService {
   async transitionState(
     conversationId: string,
     nextState: ConversationState,
+    data: Partial<{ activeDocumentId: string | null }> = {},
   ): Promise<Conversation> {
     const conversation = await this.prisma.conversation.findUniqueOrThrow({
       where: { id: conversationId },
@@ -92,8 +93,12 @@ export class ConversationService {
 
     return this.prisma.conversation.update({
       where: { id: conversationId },
-      data: { state: nextState },
+      data: { state: nextState, ...data },
     });
+  }
+
+  async findUserById(id: string): Promise<WhatsappUser | null> {
+    return this.prisma.whatsappUser.findUnique({ where: { id } });
   }
 
   /**

@@ -170,6 +170,52 @@ describe('ConversationService', () => {
       );
       expect(prisma.conversation.update).not.toHaveBeenCalled();
     });
+
+    it('persists activeDocumentId alongside the state when provided', async () => {
+      prisma.conversation.findUniqueOrThrow.mockResolvedValueOnce({
+        id: 'c1',
+        state: ConversationState.IDLE,
+      });
+      prisma.conversation.update.mockResolvedValueOnce({
+        id: 'c1',
+        state: ConversationState.PROCESSING,
+        activeDocumentId: 'doc-1',
+      });
+
+      await service.transitionState('c1', ConversationState.PROCESSING, {
+        activeDocumentId: 'doc-1',
+      });
+
+      expect(prisma.conversation.update).toHaveBeenCalledWith({
+        where: { id: 'c1' },
+        data: {
+          state: ConversationState.PROCESSING,
+          activeDocumentId: 'doc-1',
+        },
+      });
+    });
+  });
+
+  describe('findUserById', () => {
+    it('returns the user when found', async () => {
+      const user = { id: 'u1', phoneNumber: '+237600000000' };
+      prisma.whatsappUser.findUnique.mockResolvedValueOnce(user);
+
+      const result = await service.findUserById('u1');
+
+      expect(result).toBe(user);
+      expect(prisma.whatsappUser.findUnique).toHaveBeenCalledWith({
+        where: { id: 'u1' },
+      });
+    });
+
+    it('returns null when not found', async () => {
+      prisma.whatsappUser.findUnique.mockResolvedValueOnce(null);
+
+      const result = await service.findUserById('missing');
+
+      expect(result).toBeNull();
+    });
   });
 
   describe('ensureLinkedBackendUser', () => {

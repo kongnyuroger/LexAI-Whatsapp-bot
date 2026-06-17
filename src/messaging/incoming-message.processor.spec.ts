@@ -4,6 +4,7 @@ import { Job } from 'bullmq';
 import { IncomingMessageProcessor } from './incoming-message.processor';
 import { ConversationService } from '../conversation/conversation.service';
 import { WhatsappApiService } from '../whatsapp/whatsapp-api.service';
+import { DocumentIntakeService } from '../document-intake/document-intake.service';
 import { IncomingMessageJobData } from './incoming-message.types';
 
 function makeJob(data: IncomingMessageJobData): Job<IncomingMessageJobData> {
@@ -14,16 +15,19 @@ describe('IncomingMessageProcessor', () => {
   let processor: IncomingMessageProcessor;
   let conversationService: { getOrCreateForPhoneNumber: jest.Mock };
   let whatsappApiService: { sendTextMessage: jest.Mock };
+  let documentIntakeService: { handleIncomingDocument: jest.Mock };
 
   beforeEach(async () => {
     conversationService = { getOrCreateForPhoneNumber: jest.fn() };
     whatsappApiService = { sendTextMessage: jest.fn() };
+    documentIntakeService = { handleIncomingDocument: jest.fn() };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         IncomingMessageProcessor,
         { provide: ConversationService, useValue: conversationService },
         { provide: WhatsappApiService, useValue: whatsappApiService },
+        { provide: DocumentIntakeService, useValue: documentIntakeService },
       ],
     }).compile();
 
@@ -37,22 +41,22 @@ describe('IncomingMessageProcessor', () => {
     });
   }
 
-  it('replies with a placeholder when a document arrives while IDLE', async () => {
+  it('delegates to DocumentIntakeService when a document arrives while IDLE', async () => {
     withConversationState(ConversationState.IDLE);
+    const job = makeJob({
+      from: '237600000000',
+      messageId: 'wamid.1',
+      type: 'document',
+      timestamp: '123',
+      document: { id: 'media-1', mime_type: 'application/pdf' },
+    });
 
-    await processor.process(
-      makeJob({
-        from: '237600000000',
-        messageId: 'wamid.1',
-        type: 'document',
-        timestamp: '123',
-        document: { id: 'media-1', mime_type: 'application/pdf' },
-      }),
-    );
+    await processor.process(job);
 
-    expect(whatsappApiService.sendTextMessage).toHaveBeenCalledWith(
-      '237600000000',
-      'Got it, processing...',
+    expect(documentIntakeService.handleIncomingDocument).toHaveBeenCalledWith(
+      { id: 'u1', phoneNumber: '237600000000' },
+      { id: 'c1', state: ConversationState.IDLE },
+      job.data,
     );
   });
 

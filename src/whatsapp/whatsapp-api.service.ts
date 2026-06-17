@@ -31,6 +31,12 @@ interface TemplateComponent {
   parameters: Record<string, unknown>[];
 }
 
+export interface MediaMetadata {
+  url: string;
+  mimeType: string;
+  fileSizeBytes: number;
+}
+
 @Injectable()
 export class WhatsappApiService {
   private readonly logger = new Logger(WhatsappApiService.name);
@@ -52,14 +58,24 @@ export class WhatsappApiService {
     return { Authorization: `Bearer ${this.accessToken}` };
   }
 
-  /** Resolves a media id from an incoming webhook message to a short-lived download URL. */
-  async getMediaUrl(mediaId: string): Promise<string> {
+  /** Resolves a media id from an incoming webhook message to its short-lived download URL, mime type, and size. */
+  async getMediaMetadata(mediaId: string): Promise<MediaMetadata> {
     const response = await this.request<MediaUrlResponse>(() =>
       this.httpService.get(`${GRAPH_API_BASE_URL}/${mediaId}`, {
         headers: this.authHeaders,
       }),
     );
-    return response.url;
+    return {
+      url: response.url,
+      mimeType: response.mime_type,
+      fileSizeBytes: response.file_size,
+    };
+  }
+
+  /** Resolves a media id from an incoming webhook message to a short-lived download URL. */
+  async getMediaUrl(mediaId: string): Promise<string> {
+    const { url } = await this.getMediaMetadata(mediaId);
+    return url;
   }
 
   /** Downloads the actual file bytes from a media URL obtained via getMediaUrl. The URL expires after 5 minutes. */

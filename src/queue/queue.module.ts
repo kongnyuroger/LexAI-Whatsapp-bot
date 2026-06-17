@@ -1,7 +1,10 @@
 import { Module } from '@nestjs/common';
 import { BullModule } from '@nestjs/bullmq';
 import { ConfigService } from '@nestjs/config';
-import { INCOMING_MESSAGE_QUEUE } from './queue.constants';
+import {
+  DOCUMENT_ANALYSIS_QUEUE,
+  INCOMING_MESSAGE_QUEUE,
+} from './queue.constants';
 
 // Parsed into a plain options object (rather than handing BullMQ an ioredis
 // instance we construct ourselves) to avoid a duplicate-ioredis-version type
@@ -31,17 +34,31 @@ function parseRedisUrl(url: string) {
         },
       }),
     }),
-    BullModule.registerQueue({
-      name: INCOMING_MESSAGE_QUEUE,
-      defaultJobOptions: {
-        attempts: 5,
-        backoff: { type: 'exponential', delay: 2000 },
-        removeOnComplete: { age: 24 * 60 * 60 },
-        // Keep failed jobs around (capped) instead of discarding them, so
-        // they remain inspectable for debugging — our dead-letter handling.
-        removeOnFail: { count: 1000 },
+    BullModule.registerQueue(
+      {
+        name: INCOMING_MESSAGE_QUEUE,
+        defaultJobOptions: {
+          attempts: 5,
+          backoff: { type: 'exponential', delay: 2000 },
+          removeOnComplete: { age: 24 * 60 * 60 },
+          // Keep failed jobs around (capped) instead of discarding them, so
+          // they remain inspectable for debugging — our dead-letter handling.
+          removeOnFail: { count: 1000 },
+        },
       },
-    }),
+      {
+        name: DOCUMENT_ANALYSIS_QUEUE,
+        defaultJobOptions: {
+          // Retries here cover transient failures talking to lexai-backend
+          // (e.g. a dropped connection) — the "still processing, check back
+          // later" case is modeled as a new delayed job, not a retry.
+          attempts: 3,
+          backoff: { type: 'fixed', delay: 3000 },
+          removeOnComplete: { age: 24 * 60 * 60 },
+          removeOnFail: { count: 1000 },
+        },
+      },
+    ),
   ],
   exports: [BullModule],
 })

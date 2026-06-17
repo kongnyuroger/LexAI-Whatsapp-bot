@@ -110,10 +110,42 @@ BullMQ queue (`src/queue/queue.module.ts`) backed by Redis:
   the failed set (capped at the most recent 1000) — this repo's dead-letter handling, since BullMQ
   has no separate DLQ concept. Failures are logged with the job id, message id, and sender so they
   stay debuggable.
-- The processor routes by `(conversation.state, message.type)`. Today every branch sends the
-  same placeholder reply ("Got it, processing...") — each is marked with a `TODO(Task N)`
-  pointing at the real logic that replaces it (document intake in Task 5, document chat in
-  Task 7, onboarding copy in Task 8).
+- The processor routes by `(conversation.state, message.type)`. The IDLE/AWAITING_DOCUMENT +
+  media branch now runs the real document intake flow (below); the remaining branches still send
+  a placeholder reply ("Got it, processing...") with a `TODO(Task N)` pointing at the real logic
+  (document chat in Task 7, onboarding copy in Task 8).
+
+## Document intake flow
+
+When a user sends a photo or PDF while `IDLE`/`AWAITING_DOCUMENT`, `DocumentIntakeService`
+(`src/document-intake/document-intake.service.ts`) runs:
+
+1. Validate the mime type from the webhook payload itself (`application/pdf`, `image/jpeg`,
+   `image/png` — see `ALLOWED_MIME_TYPES`) and reject anything else with a friendly WhatsApp
+   reply, with no Graph API or backend call at all.
+2. Fetch media metadata (`WhatsappApiService.getMediaMetadata`) to check the file size against
+   `MAX_FILE_SIZE_BYTES` (10MB default — adjust once lexai-backend documents its own limit) and
+   reject oversized files the same way, still before calling lexai-backend.
+3. Download the file, call `ensureLinkedBackendUser()`, then `lexai-backend`'s
+   `POST /documents/upload`.
+4. Send the acknowledgement reply ("Got your document! Reading through it now...") and transition
+   the conversation `-> PROCESSING` with `activeDocumentId` set.
+5. Enqueue a `document-analysis` job (separate BullMQ queue) to trigger and track analysis,
+   decoupled from the fast incoming-message queue since analysis can be slow.
+
+`AnalyzeDocumentProcessor` (`src/document-intake/analyze-document.processor.ts`) then:
+
+- Calls `POST /documents/:id/analyze`, then self-schedules a delayed "poll" job
+  (`POLL_INTERVAL_MS` = 5s) rather than blocking inside one job.
+- Each poll calls `GET /documents/:id`: `ANALYZED` → transition `-> ANALYZED` and notify the user
+  (Task 6 replaces the placeholder reply with the real formatted summary); `FAILED` → transition
+  back to `IDLE` with a friendly error; still processing → re-enqueue another poll, up to
+  `MAX_POLL_ATTEMPTS` (24 × 5s = 2 minutes) before giving up and resetting to `IDLE`.
+
+Any failure during steps 1-5 above (including `ensureLinkedBackendUser()` rejecting because
+`POST /auth/whatsapp-link` doesn't exist yet in `lexai-backend`) is caught, logged with context,
+and reported to the user as a generic friendly error — the conversation stays in its current
+state rather than getting stuck in a falsely-`PROCESSING` limbo.
 
 ## Environment variables
 
@@ -183,7 +215,7 @@ implemented so far.
 - [x] Task 2 — WhatsApp Cloud API client
 - [x] Task 3 — Conversation state & user linking
 - [x] Task 4 — Background job queue for webhook processing
-- [ ] Task 5 — Document intake flow
+- [x] Task 5 — Document intake flow
 - [ ] Task 6 — Sending analysis results as WhatsApp messages
 - [ ] Task 7 — Document chat via WhatsApp
 - [ ] Task 8 — Onboarding, help & error messaging

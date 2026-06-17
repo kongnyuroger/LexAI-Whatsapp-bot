@@ -4,6 +4,7 @@ import { Job } from 'bullmq';
 import { ConversationState } from '@prisma/client';
 import { ConversationService } from '../conversation/conversation.service';
 import { WhatsappApiService } from '../whatsapp/whatsapp-api.service';
+import { DocumentIntakeService } from '../document-intake/document-intake.service';
 import { INCOMING_MESSAGE_QUEUE } from '../queue/queue.constants';
 import { IncomingMessageJobData } from './incoming-message.types';
 
@@ -16,6 +17,7 @@ export class IncomingMessageProcessor extends WorkerHost {
   constructor(
     private readonly conversationService: ConversationService,
     private readonly whatsappApiService: WhatsappApiService,
+    private readonly documentIntakeService: DocumentIntakeService,
   ) {
     super();
   }
@@ -26,7 +28,7 @@ export class IncomingMessageProcessor extends WorkerHost {
       `Processing message ${messageId} from=${from} type=${type}`,
     );
 
-    const { conversation } =
+    const { user, conversation } =
       await this.conversationService.getOrCreateForPhoneNumber(from);
     const isMedia = MEDIA_TYPES.has(type);
 
@@ -34,11 +36,10 @@ export class IncomingMessageProcessor extends WorkerHost {
       case ConversationState.IDLE:
       case ConversationState.AWAITING_DOCUMENT:
         if (isMedia) {
-          // TODO(Task 5): download the media, upload it to lexai-backend,
-          // trigger analysis, and transition IDLE/AWAITING_DOCUMENT -> PROCESSING.
-          await this.whatsappApiService.sendTextMessage(
-            from,
-            'Got it, processing...',
+          await this.documentIntakeService.handleIncomingDocument(
+            user,
+            conversation,
+            job.data,
           );
         } else {
           // TODO(Task 8): send the onboarding/help copy explaining how to use the bot.

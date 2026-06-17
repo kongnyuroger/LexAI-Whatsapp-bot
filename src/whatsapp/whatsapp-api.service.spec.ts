@@ -41,6 +41,31 @@ describe('WhatsappApiService', () => {
     service = module.get<WhatsappApiService>(WhatsappApiService);
   });
 
+  describe('getMediaMetadata', () => {
+    it('returns the download url, mime type, and file size', async () => {
+      httpService.get.mockReturnValueOnce(
+        of(
+          axiosResponse({
+            messaging_product: 'whatsapp',
+            url: 'https://lookaside.fbsbx.com/media/abc',
+            mime_type: 'application/pdf',
+            sha256: 'deadbeef',
+            file_size: 204800,
+            id: 'media-123',
+          }),
+        ),
+      );
+
+      const metadata = await service.getMediaMetadata('media-123');
+
+      expect(metadata).toEqual({
+        url: 'https://lookaside.fbsbx.com/media/abc',
+        mimeType: 'application/pdf',
+        fileSizeBytes: 204800,
+      });
+    });
+  });
+
   describe('getMediaUrl', () => {
     it('requests the media metadata and returns the download url', async () => {
       httpService.get.mockReturnValueOnce(
