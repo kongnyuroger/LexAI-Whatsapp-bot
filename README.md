@@ -44,9 +44,10 @@ npm run start:dev
 
 Health check: `GET http://localhost:3000/health` → `{ "status": "ok", "timestamp": "..." }`
 
-Note: `PrismaModule` connects to Postgres on app startup, so a reachable `DATABASE_URL` is required
-even to run the e2e test suite (`npm run test:e2e`) — `docker-compose up -d` + `npm run
-prisma:migrate` (or `prisma:deploy` against an already-migrated database) first.
+Note: `PrismaModule` connects to Postgres and `QueueModule` connects to Redis on app startup, so
+both `DATABASE_URL` and `REDIS_URL` must be reachable even to run the e2e test suite (`npm run
+test:e2e`) — `docker-compose up -d` + `npm run prisma:migrate` (or `prisma:deploy` against an
+already-migrated database) first.
 
 ## WhatsApp webhook
 
@@ -58,10 +59,10 @@ current as of June 2026):
   `hub.challenge` with `200 OK` if `hub.verify_token` matches `WHATSAPP_VERIFY_TOKEN`, otherwise
   responds `403`.
 - `POST /webhook` — receives real-time message notifications. The payload shape is validated
-  against the documented Cloud API webhook structure (`object` / `entry[].changes[].value`).
-  Meta requires a fast acknowledgement or it will retry and eventually disable the webhook, so
-  for now this handler only validates and logs the parsed message (sender, type, content/media
-  id) — background job processing is added in Task 4.
+  against the documented Cloud API webhook structure (`object` / `entry[].changes[].value`), then
+  each message is enqueued as an `IncomingMessageJob` (BullMQ) and the handler returns `200`
+  immediately — Meta requires a fast acknowledgement or it will retry and eventually disable the
+  webhook.
 
 `WhatsappApiService` (`src/whatsapp/whatsapp-api.service.ts`) wraps the three Graph API calls this
 bot needs:
@@ -98,6 +99,21 @@ so a user can always type "new"/"restart" — Task 8):
 
 `ensureLinkedBackendUser(user)` is the single seam that calls the (currently unbuilt)
 `lexai-backend` `POST /auth/whatsapp-link` endpoint — see "Known Integration Gap" below.
+
+## Background job queue
+
+`POST /webhook` only validates and enqueues — `IncomingMessageProcessor`
+(`src/messaging/incoming-message.processor.ts`) does the actual work off the request path, via a
+BullMQ queue (`src/queue/queue.module.ts`) backed by Redis:
+
+- Each job retries up to 5 times with exponential backoff (starting at 2s) before being left in
+  the failed set (capped at the most recent 1000) — this repo's dead-letter handling, since BullMQ
+  has no separate DLQ concept. Failures are logged with the job id, message id, and sender so they
+  stay debuggable.
+- The processor routes by `(conversation.state, message.type)`. Today every branch sends the
+  same placeholder reply ("Got it, processing...") — each is marked with a `TODO(Task N)`
+  pointing at the real logic that replaces it (document intake in Task 5, document chat in
+  Task 7, onboarding copy in Task 8).
 
 ## Environment variables
 
@@ -166,7 +182,7 @@ implemented so far.
 - [x] Task 1 — Project initialization, tooling, backend auth gap analysis
 - [x] Task 2 — WhatsApp Cloud API client
 - [x] Task 3 — Conversation state & user linking
-- [ ] Task 4 — Background job queue for webhook processing
+- [x] Task 4 — Background job queue for webhook processing
 - [ ] Task 5 — Document intake flow
 - [ ] Task 6 — Sending analysis results as WhatsApp messages
 - [ ] Task 7 — Document chat via WhatsApp

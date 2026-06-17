@@ -6,6 +6,7 @@ import { HealthModule } from './health/health.module';
 import { WhatsappModule } from './whatsapp/whatsapp.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { ConversationModule } from './conversation/conversation.module';
+import { MessagingModule } from './messaging/messaging.module';
 
 @Module({
   imports: [
@@ -14,6 +15,7 @@ import { ConversationModule } from './conversation/conversation.module';
     HealthModule,
     WhatsappModule,
     ConversationModule,
+    MessagingModule,
   ],
   controllers: [AppController],
   providers: [AppService],

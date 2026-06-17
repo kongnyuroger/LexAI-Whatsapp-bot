@@ -9,13 +9,24 @@ import {
   Query,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { InjectQueue } from '@nestjs/bullmq';
+import { Queue } from 'bullmq';
 import { WebhookPayloadDto } from './dto/webhook-payload.dto';
+import {
+  INCOMING_MESSAGE_JOB,
+  INCOMING_MESSAGE_QUEUE,
+} from '../queue/queue.constants';
+import { IncomingMessageJobData } from '../messaging/incoming-message.types';
 
 @Controller('webhook')
 export class WhatsappController {
   private readonly logger = new Logger(WhatsappController.name);
 
-  constructor(private readonly configService: ConfigService) {}
+  constructor(
+    private readonly configService: ConfigService,
+    @InjectQueue(INCOMING_MESSAGE_QUEUE)
+    private readonly incomingMessageQueue: Queue<IncomingMessageJobData>,
+  ) {}
 
   // Meta calls this once, when the webhook URL is configured in the Meta App
   // dashboard, to confirm this server controls the endpoint.
@@ -39,20 +50,28 @@ export class WhatsappController {
 
   // Real-time notification for every inbound message/status update. Meta
   // requires a fast 200 response or it will retry and eventually disable the
-  // webhook; this handler currently only parses and logs (queueing for
-  // background processing is added in Task 4).
+  // webhook, so the actual work (download media, call lexai-backend, reply)
+  // happens in IncomingMessageProcessor, off the request path.
   @Post()
   @HttpCode(200)
-  receiveWebhook(@Body() payload: WebhookPayloadDto): { received: true } {
+  async receiveWebhook(
+    @Body() payload: WebhookPayloadDto,
+  ): Promise<{ received: true }> {
     for (const entry of payload.entry) {
       for (const change of entry.changes) {
         for (const message of change.value.messages ?? []) {
           this.logger.log(
-            `Incoming message from=${message.from} type=${message.type} ` +
-              `content=${JSON.stringify(
-                message.text ?? message.image ?? message.document ?? null,
-              )}`,
+            `Enqueuing message ${message.id} from=${message.from} type=${message.type}`,
           );
+          await this.incomingMessageQueue.add(INCOMING_MESSAGE_JOB, {
+            from: message.from,
+            messageId: message.id,
+            type: message.type,
+            timestamp: message.timestamp,
+            text: message.text,
+            image: message.image,
+            document: message.document,
+          });
         }
       }
     }
