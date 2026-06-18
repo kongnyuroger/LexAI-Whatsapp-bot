@@ -27,4 +27,18 @@ describe('parseRedisUrl', () => {
       password: 'secret',
     });
   });
+
+  it('enables TLS for rediss:// URLs', () => {
+    expect(parseRedisUrl('rediss://default:secret@upstash.io:6379')).toEqual({
+      host: 'upstash.io',
+      port: 6379,
+      username: 'default',
+      password: 'secret',
+      tls: {},
+    });
+  });
+
+  it('does not enable TLS for plain redis:// URLs', () => {
+    expect(parseRedisUrl('redis://localhost:6379')).not.toHaveProperty('tls');
+  });
 });

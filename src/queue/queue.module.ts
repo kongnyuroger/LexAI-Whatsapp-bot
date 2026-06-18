@@ -16,6 +16,9 @@ export function parseRedisUrl(url: string) {
     port: Number(parsed.port || 6379),
     username: parsed.username || undefined,
     password: parsed.password || undefined,
+    // `rediss://` (e.g. Upstash) requires TLS on the same port; without this,
+    // ioredis attempts a plain handshake and the server resets the connection.
+    ...(parsed.protocol === 'rediss:' ? { tls: {} } : {}),
   };
 }
 
