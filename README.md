@@ -271,7 +271,7 @@ this MVP's scale.
 | --- | --- |
 | `PORT` | Port this service listens on |
 | `DATABASE_URL` | Postgres connection string (Prisma) |
-| `REDIS_URL` | Redis connection string (BullMQ) |
+| `REDIS_URL` | Redis connection string (BullMQ). Use `rediss://` (not `redis://`) for managed providers that require TLS, e.g. Upstash — the queue connection auto-enables TLS based on this scheme |
 | `LEXAI_BACKEND_URL` | Base URL of `lexai-backend` |
 | `LEXAI_SERVICE_API_KEY` | Shared secret sent as the `X-Service-Key` header to `lexai-backend`'s `POST /auth/whatsapp-link`. Must match lexai-backend's own `SERVICE_API_KEY` env var |
 | `WHATSAPP_VERIFY_TOKEN` | Shared secret used to verify the Meta webhook subscription challenge |
