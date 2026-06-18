@@ -259,10 +259,17 @@ hardening — see below.
   own `AllExceptionsFilter`: a consistent `{ statusCode, message, timestamp, path }` JSON body for
   every error instead of a raw stack trace, with unexpected (non-`HttpException`) errors logged
   server-side in full but reported to the client only as a generic "Internal server error".
+- **Request logging** (`src/common/request-logger.middleware.ts`) — logs `METHOD path status
+  durationMs` for every HTTP request, at `log`/`warn`/`error` depending on status code. Listens on
+  the response's `finish` event rather than reading the route handler's return value, so it
+  reflects the status actually sent even when a guard or filter rejects the request before it
+  reaches a controller (e.g. a throttled or signature-rejected webhook call). Deliberately never
+  logs the request body or headers — webhook payloads carry WhatsApp message content, and headers
+  carry the app secret and access tokens.
 
-Not done here (left for a future iteration, not silently skipped): structured/correlation-id
-logging across the webhook → queue → processor chain, and metrics/alerting on job failure rates.
-The existing per-job logging (job id, message id, sender, attempt count) was judged sufficient for
+Not done here (left for a future iteration, not silently skipped): correlation IDs tying a single
+request's log lines to the queue job(s) it spawns, and metrics/alerting on job failure rates. The
+existing per-job logging (job id, message id, sender, attempt count) was judged sufficient for
 this MVP's scale.
 
 ## Environment variables
