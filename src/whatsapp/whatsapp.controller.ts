@@ -74,6 +74,9 @@ export class WhatsappController {
   ): Promise<{ received: true }> {
     for (const entry of payload.entry) {
       for (const change of entry.changes) {
+        this.logger.log(
+          `Webhook change field=${change.field} messages=${change.value.messages?.length ?? 0} statuses=${change.value.statuses?.length ?? 0}`,
+        );
         for (const message of change.value.messages ?? []) {
           this.logger.log(
             `Enqueuing message ${message.id} from=${message.from} type=${message.type}`,
