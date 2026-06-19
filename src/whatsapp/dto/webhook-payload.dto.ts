@@ -12,15 +12,10 @@ import {
 // payloads as of June 2026: https://developers.facebook.com/docs/whatsapp/cloud-api/guides/set-up-webhooks/
 // Only the fields this bot currently reads are validated strictly; message
 // "content" fields (text/image/document) are typed loosely since WhatsApp
-// has many more message types than this bot acts on today.
-
-export class WebhookContactDto {
-  @IsObject()
-  profile!: { name: string };
-
-  @IsString()
-  wa_id!: string;
-}
+// has many more message types than this bot acts on today. `contacts` is
+// never read by this bot at all (only `messages` is), and its real-world
+// shape varies (e.g. `profile` can be absent) — validating it strictly was
+// rejecting otherwise-legitimate webhook deliveries, so it's left untyped.
 
 export class WebhookMessageDto {
   @IsString()
@@ -71,9 +66,7 @@ export class WebhookValueDto {
 
   @IsOptional()
   @IsArray()
-  @ValidateNested({ each: true })
-  @Type(() => WebhookContactDto)
-  contacts?: WebhookContactDto[];
+  contacts?: unknown[];
 
   @IsOptional()
   @IsArray()
